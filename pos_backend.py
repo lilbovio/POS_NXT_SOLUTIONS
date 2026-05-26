@@ -1,0 +1,294 @@
+import os
+import sqlite3
+import pandas as pd
+from flask import Flask, request, jsonify, render_template, send_from_directory
+from werkzeug.security import generate_password_hash, check_password_hash
+from datetime import datetime
+
+app = Flask(__name__)
+DB_FILE = "pos_database.db"
+EXCEL_FILE = "Base de datos Excel.xlsx"
+
+def get_db():
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    conn = get_db()
+    c = conn.cursor()
+    # Create tables
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL
+                )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS products (
+                    codigo TEXT PRIMARY KEY,
+                    descripcion TEXT NOT NULL,
+                    precio REAL NOT NULL,
+                    stock INTEGER DEFAULT 0
+                )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS sales (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    total REAL NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    is_synced INTEGER DEFAULT 0,
+                    FOREIGN KEY(user_id) REFERENCES users(id)
+                )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS sale_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sale_id INTEGER,
+                    product_codigo TEXT,
+                    quantity INTEGER,
+                    subtotal REAL,
+                    FOREIGN KEY(sale_id) REFERENCES sales(id),
+                    FOREIGN KEY(product_codigo) REFERENCES products(codigo)
+                )''')
+    
+    # Check if admin user exists
+    c.execute("SELECT id FROM users WHERE username = 'admin'")
+    if not c.fetchone():
+        c.execute("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+                  ('admin', generate_password_hash('admin123'), 'admin'))
+        c.execute("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+                  ('caja', generate_password_hash('caja123'), 'cashier'))
+        
+    conn.commit()
+    conn.close()
+
+def import_excel_data():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) as count FROM products")
+    count = c.fetchone()['count']
+    if count == 0 and os.path.exists(EXCEL_FILE):
+        try:
+            df = pd.read_excel(EXCEL_FILE)
+            # Clean the PM column: convert to numeric, fill NaN with 0
+            df['PM'] = pd.to_numeric(df['PM'], errors='coerce').fillna(0)
+            imported = 0
+            for _, row in df.iterrows():
+                codigo = str(row.get('Codigo', '')).strip()
+                desc = str(row.get('Descripcion', '')).strip()
+                precio = float(row.get('PM', 0))
+                
+                if codigo and codigo != 'nan' and desc and desc != 'nan':
+                    c.execute("INSERT OR REPLACE INTO products (codigo, descripcion, precio, stock) VALUES (?, ?, ?, ?)",
+                              (codigo, desc, precio, 0))
+                    imported += 1
+            conn.commit()
+            print(f"Imported {imported} products from Excel.")
+        except Exception as e:
+            print(f"Error importing excel: {e}")
+    conn.close()
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+# Authentication
+@app.route('/api/login', methods=['POST'])
+def login():
+    data = request.json
+    username = data.get('username')
+    password = data.get('password')
+    
+    conn = get_db()
+    user = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+    conn.close()
+    
+    if user and check_password_hash(user['password_hash'], password):
+        return jsonify({"success": True, "user": {"id": user['id'], "username": user['username'], "role": user['role']}})
+    return jsonify({"success": False, "message": "Credenciales inválidas"}), 401
+
+# Products
+@app.route('/api/products', methods=['GET'])
+def get_products():
+    query = request.args.get('q', '').lower()
+    conn = get_db()
+    if query:
+        products = conn.execute("SELECT * FROM products WHERE lower(codigo) LIKE ? OR lower(descripcion) LIKE ?", (f"%{query}%", f"%{query}%")).fetchall()
+    else:
+        products = conn.execute("SELECT * FROM products ORDER BY descripcion ASC").fetchall()
+    conn.close()
+    return jsonify([dict(p) for p in products])
+
+# Update product stock (Admin)
+@app.route('/api/products/<codigo>/stock', methods=['PUT'])
+def update_stock(codigo):
+    data = request.json
+    new_stock = data.get('stock', 0)
+    conn = get_db()
+    conn.execute("UPDATE products SET stock = ? WHERE codigo = ?", (new_stock, codigo))
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True})
+
+# Update product price (Admin)
+@app.route('/api/products/<codigo>', methods=['PUT'])
+def update_product(codigo):
+    data = request.json
+    conn = get_db()
+    if 'precio' in data:
+        conn.execute("UPDATE products SET precio = ? WHERE codigo = ?", (data['precio'], codigo))
+    if 'stock' in data:
+        conn.execute("UPDATE products SET stock = ? WHERE codigo = ?", (data['stock'], codigo))
+    if 'descripcion' in data:
+        conn.execute("UPDATE products SET descripcion = ? WHERE codigo = ?", (data['descripcion'], codigo))
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True})
+
+# Sales Registration
+@app.route('/api/sales', methods=['POST'])
+def register_sale():
+    data = request.json
+    user_id = data.get('user_id')
+    items = data.get('items', []) # [{'codigo': 'T1', 'quantity': 2, 'subtotal': 1306.0}]
+    total = data.get('total', 0)
+    
+    if not items:
+        return jsonify({"success": False, "message": "El carrito está vacío"}), 400
+        
+    conn = get_db()
+    c = conn.cursor()
+    timestamp = datetime.now().isoformat()
+    
+    c.execute("INSERT INTO sales (user_id, total, timestamp, is_synced) VALUES (?, ?, ?, 0)", (user_id, total, timestamp))
+    sale_id = c.lastrowid
+    
+    for item in items:
+        c.execute("INSERT INTO sale_items (sale_id, product_codigo, quantity, subtotal) VALUES (?, ?, ?, ?)",
+                  (sale_id, item['codigo'], item['quantity'], item['subtotal']))
+        # Decrease stock
+        c.execute("UPDATE products SET stock = stock - ? WHERE codigo = ?", (item['quantity'], item['codigo']))
+        
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True, "sale_id": sale_id, "timestamp": timestamp})
+
+# Get sale details (items) for a specific sale
+@app.route('/api/sales/<int:sale_id>/items', methods=['GET'])
+def get_sale_items(sale_id):
+    conn = get_db()
+    items = conn.execute("""
+        SELECT si.*, p.descripcion 
+        FROM sale_items si 
+        LEFT JOIN products p ON si.product_codigo = p.codigo 
+        WHERE si.sale_id = ?
+    """, (sale_id,)).fetchall()
+    conn.close()
+    return jsonify([dict(i) for i in items])
+
+# Get a digital receipt by sale_id
+@app.route('/api/receipt/<int:sale_id>', methods=['GET'])
+def get_receipt(sale_id):
+    conn = get_db()
+    sale = conn.execute("""
+        SELECT s.*, u.username 
+        FROM sales s 
+        LEFT JOIN users u ON s.user_id = u.id 
+        WHERE s.id = ?
+    """, (sale_id,)).fetchone()
+    
+    if not sale:
+        conn.close()
+        return jsonify({"success": False, "message": "Venta no encontrada"}), 404
+    
+    items = conn.execute("""
+        SELECT si.*, p.descripcion, p.precio as unit_price
+        FROM sale_items si 
+        LEFT JOIN products p ON si.product_codigo = p.codigo 
+        WHERE si.sale_id = ?
+    """, (sale_id,)).fetchall()
+    conn.close()
+    
+    return jsonify({
+        "success": True,
+        "receipt": {
+            "sale_id": sale['id'],
+            "cashier": sale['username'] or 'Desconocido',
+            "total": sale['total'],
+            "timestamp": sale['timestamp'],
+            "is_synced": sale['is_synced'],
+            "items": [dict(i) for i in items]
+        }
+    })
+
+# Admin endpoints
+@app.route('/api/admin/income', methods=['GET'])
+def get_income():
+    conn = get_db()
+    # Today's income
+    today_start = datetime.now().strftime("%Y-%m-%d") + "T00:00:00"
+    today_total = conn.execute("SELECT SUM(total) as t FROM sales WHERE timestamp >= ?", (today_start,)).fetchone()['t']
+    
+    # Overall stats
+    total_sales_count = conn.execute("SELECT COUNT(*) as c FROM sales").fetchone()['c']
+    total_products = conn.execute("SELECT COUNT(*) as c FROM products").fetchone()['c']
+    unsynced_count = conn.execute("SELECT COUNT(*) as c FROM sales WHERE is_synced = 0").fetchone()['c']
+    all_time_total = conn.execute("SELECT SUM(total) as t FROM sales").fetchone()['t']
+    
+    # All sales
+    sales = conn.execute("""
+        SELECT s.id, u.username, s.total, s.timestamp, s.is_synced 
+        FROM sales s 
+        LEFT JOIN users u ON s.user_id = u.id 
+        ORDER BY s.timestamp DESC
+    """).fetchall()
+    conn.close()
+    
+    return jsonify({
+        "today_total": today_total or 0,
+        "total_sales_count": total_sales_count,
+        "total_products": total_products,
+        "unsynced_count": unsynced_count,
+        "all_time_total": all_time_total or 0,
+        "sales": [dict(s) for s in sales]
+    })
+
+# Admin: inventory with low stock alert
+@app.route('/api/admin/inventory', methods=['GET'])
+def get_inventory():
+    query = request.args.get('q', '').lower()
+    sort = request.args.get('sort', 'descripcion')
+    order = request.args.get('order', 'asc')
+    
+    conn = get_db()
+    
+    valid_sorts = {'descripcion': 'descripcion', 'precio': 'precio', 'stock': 'stock', 'codigo': 'codigo'}
+    sort_col = valid_sorts.get(sort, 'descripcion')
+    order_dir = 'DESC' if order == 'desc' else 'ASC'
+    
+    if query:
+        products = conn.execute(
+            f"SELECT * FROM products WHERE lower(codigo) LIKE ? OR lower(descripcion) LIKE ? ORDER BY {sort_col} {order_dir}",
+            (f"%{query}%", f"%{query}%")
+        ).fetchall()
+    else:
+        products = conn.execute(f"SELECT * FROM products ORDER BY {sort_col} {order_dir}").fetchall()
+    
+    conn.close()
+    return jsonify([dict(p) for p in products])
+
+# Sync Mock
+@app.route('/api/sync', methods=['POST'])
+def sync_data():
+    # Mocking sync to a general database
+    conn = get_db()
+    unsynced = conn.execute("SELECT COUNT(*) as c FROM sales WHERE is_synced = 0").fetchone()['c']
+    conn.execute("UPDATE sales SET is_synced = 1 WHERE is_synced = 0")
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True, "message": f"Se sincronizaron {unsynced} ventas a la base de datos remota"})
+
+if __name__ == '__main__':
+    init_db()
+    import_excel_data()
+    app.run(port=5000)

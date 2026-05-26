@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>POS NXT Solutions</title>
+    <meta name="description" content="Sistema de Punto de Venta NXT Solutions - Gestión de ventas, inventario y recibos">
+    <link rel="stylesheet" href="/static/style.css">
+    <!-- Google Fonts for modern typography -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+
+    <!-- Ambient animated background -->
+    <div class="ambient-bg">
+        <div class="orb orb-1"></div>
+        <div class="orb orb-2"></div>
+        <div class="orb orb-3"></div>
+    </div>
+
+    <div id="app">
+        <!-- 1. LOGIN VIEW -->
+        <div id="view-login" class="view active">
+            <div class="login-wrapper">
+                <div class="glass-card login-card">
+                    <div class="login-logo">
+                        <div class="logo-icon-wrapper">
+                            <i class="fa-solid fa-wine-bottle"></i>
+                        </div>
+                        <h1>NXT <span>POS</span></h1>
+                        <p class="login-subtitle">Sistema de Punto de Venta</p>
+                    </div>
+                    <form id="login-form">
+                        <div class="input-group">
+                            <i class="fa-solid fa-user"></i>
+                            <input type="text" id="username" placeholder="Usuario" required autocomplete="off">
+                            <div class="input-glow"></div>
+                        </div>
+                        <div class="input-group">
+                            <i class="fa-solid fa-lock"></i>
+                            <input type="password" id="password" placeholder="Contraseña" required>
+                            <div class="input-glow"></div>
+                        </div>
+                        <button type="submit" id="login-btn" class="btn btn-primary btn-glow">
+                            <i class="fa-solid fa-right-to-bracket"></i> Ingresar
+                        </button>
+                        <p id="login-error" class="error-msg"></p>
+                    </form>
+                    <div class="login-footer">
+                        <p>NXT Solutions &copy; 2026</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 2. CASHIER VIEW (POS) -->
+        <div id="view-pos" class="view">
+            <header class="glass-header">
+                <div class="header-left">
+                    <div class="logo-small"><i class="fa-solid fa-wine-bottle"></i> NXT POS</div>
+                    <span class="header-divider"></span>
+                    <span class="view-badge cashier-badge"><i class="fa-solid fa-cash-register"></i> Caja</span>
+                </div>
+                <div class="header-actions">
+                    <div class="user-pill" id="pos-user-pill">
+                        <i class="fa-solid fa-circle-user"></i>
+                        <span id="pos-user-label">Cajero</span>
+                    </div>
+                    <button class="btn btn-ghost" onclick="logout()"><i class="fa-solid fa-arrow-right-from-bracket"></i> Salir</button>
+                </div>
+            </header>
+            
+            <div class="pos-container">
+                <!-- Products Panel -->
+                <div class="products-section glass-panel">
+                    <div class="section-header">
+                        <h2><i class="fa-solid fa-boxes-stacked"></i> Productos</h2>
+                        <span class="product-count-badge" id="product-count-badge">0 productos</span>
+                    </div>
+                    <div class="search-bar">
+                        <i class="fa-solid fa-magnifying-glass"></i>
+                        <input type="text" id="product-search" placeholder="Buscar por código o nombre...">
+                        <kbd class="search-shortcut">Ctrl+K</kbd>
+                    </div>
+                    <div class="product-grid" id="product-grid">
+                        <div class="empty-state">
+                            <i class="fa-solid fa-search"></i>
+                            <p>Busca un producto para comenzar</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Cart Panel -->
+                <div class="cart-section glass-panel">
+                    <div class="section-header">
+                        <h2><i class="fa-solid fa-receipt"></i> Cuenta Actual</h2>
+                        <span class="cart-count-badge" id="cart-count">0</span>
+                    </div>
+                    <div class="cart-items" id="cart-items">
+                        <div class="cart-empty-state" id="cart-empty">
+                            <i class="fa-solid fa-cart-shopping"></i>
+                            <p>Carrito vacío</p>
+                            <span>Selecciona productos para agregar</span>
+                        </div>
+                    </div>
+                    <div class="cart-summary">
+                        <div class="summary-details">
+                            <div class="summary-row">
+                                <span>Artículos:</span>
+                                <span id="cart-item-count">0</span>
+                            </div>
+                            <div class="summary-row total-row">
+                                <span>Total:</span>
+                                <span id="cart-total" class="total-amount">$0.00</span>
+                            </div>
+                        </div>
+                        <div class="cart-actions">
+                            <button class="btn btn-success btn-large btn-glow" id="btn-checkout" onclick="processSale()">
+                                <i class="fa-solid fa-check-circle"></i> Cobrar e Imprimir
+                            </button>
+                            <button class="btn btn-outline-danger btn-large" onclick="clearCart()">
+                                <i class="fa-solid fa-xmark"></i> Cancelar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 3. ADMIN VIEW -->
+        <div id="view-admin" class="view">
+            <header class="glass-header">
+                <div class="header-left">
+                    <div class="logo-small"><i class="fa-solid fa-wine-bottle"></i> NXT POS</div>
+                    <span class="header-divider"></span>
+                    <span class="view-badge admin-badge"><i class="fa-solid fa-shield-halved"></i> Admin</span>
+                </div>
+                <div class="header-actions">
+                    <div class="admin-nav">
+                        <button class="btn btn-nav active" id="nav-dashboard" onclick="switchAdminTab('dashboard')">
+                            <i class="fa-solid fa-chart-pie"></i> Dashboard
+                        </button>
+                        <button class="btn btn-nav" id="nav-inventory" onclick="switchAdminTab('inventory')">
+                            <i class="fa-solid fa-boxes-stacked"></i> Inventario
+                        </button>
+                        <button class="btn btn-nav" id="nav-pos" onclick="adminGoToPOS()">
+                            <i class="fa-solid fa-cash-register"></i> Caja
+                        </button>
+                    </div>
+                    <span class="header-divider"></span>
+                    <button class="btn btn-accent" onclick="syncData()" id="btn-sync">
+                        <i class="fa-solid fa-cloud-arrow-up"></i> Sincronizar
+                    </button>
+                    <div class="user-pill">
+                        <i class="fa-solid fa-circle-user"></i>
+                        <span id="admin-user-label">Admin</span>
+                    </div>
+                    <button class="btn btn-ghost" onclick="logout()"><i class="fa-solid fa-arrow-right-from-bracket"></i> Salir</button>
+                </div>
+            </header>
+            
+            <div class="admin-container">
+                <!-- Dashboard Tab -->
+                <div class="admin-tab active" id="tab-dashboard">
+                    <!-- Summary Cards -->
+                    <div class="stats-row">
+                        <div class="stat-card glass-panel stat-gradient-1">
+                            <div class="stat-icon-wrapper">
+                                <i class="fa-solid fa-coins"></i>
+                            </div>
+                            <div class="stat-info">
+                                <span class="stat-label">Ingresos de Hoy</span>
+                                <h2 id="today-income">$0.00</h2>
+                            </div>
+                        </div>
+                        <div class="stat-card glass-panel stat-gradient-2">
+                            <div class="stat-icon-wrapper">
+                                <i class="fa-solid fa-chart-line"></i>
+                            </div>
+                            <div class="stat-info">
+                                <span class="stat-label">Ingresos Totales</span>
+                                <h2 id="all-time-income">$0.00</h2>
+                            </div>
+                        </div>
+                        <div class="stat-card glass-panel stat-gradient-3">
+                            <div class="stat-icon-wrapper">
+                                <i class="fa-solid fa-bag-shopping"></i>
+                            </div>
+                            <div class="stat-info">
+                                <span class="stat-label">Total Ventas</span>
+                                <h2 id="total-sales-count">0</h2>
+                            </div>
+                        </div>
+                        <div class="stat-card glass-panel stat-gradient-4">
+                            <div class="stat-icon-wrapper">
+                                <i class="fa-solid fa-cloud-arrow-up"></i>
+                            </div>
+                            <div class="stat-info">
+                                <span class="stat-label">Sin Sincronizar</span>
+                                <h2 id="unsynced-count">0</h2>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Sales History Table -->
+                    <div class="admin-tables glass-panel">
+                        <div class="section-header">
+                            <h3><i class="fa-solid fa-clock-rotate-left"></i> Historial de Ventas</h3>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="data-table" id="sales-table">
+                                <thead>
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>Cajero</th>
+                                        <th>Fecha</th>
+                                        <th>Total</th>
+                                        <th>Estado</th>
+                                        <th>Acciones</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="sales-table-body">
+                                    <!-- Sales loaded here -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Inventory Tab -->
+                <div class="admin-tab" id="tab-inventory">
+                    <div class="inventory-header">
+                        <div class="search-bar inventory-search">
+                            <i class="fa-solid fa-magnifying-glass"></i>
+                            <input type="text" id="inventory-search" placeholder="Buscar en inventario...">
+                        </div>
+                        <div class="inventory-sort">
+                            <select id="inventory-sort" class="select-modern">
+                                <option value="descripcion">Nombre</option>
+                                <option value="codigo">Código</option>
+                                <option value="precio">Precio</option>
+                                <option value="stock">Stock</option>
+                            </select>
+                            <button class="btn btn-ghost" id="sort-order-btn" onclick="toggleSortOrder()">
+                                <i class="fa-solid fa-arrow-down-a-z" id="sort-order-icon"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="admin-tables glass-panel">
+                        <div class="section-header">
+                            <h3><i class="fa-solid fa-warehouse"></i> Inventario de Productos</h3>
+                            <span class="product-count-badge" id="inventory-count-badge">0 productos</span>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Código</th>
+                                        <th>Descripción</th>
+                                        <th>Precio</th>
+                                        <th>Stock</th>
+                                        <th>Estado</th>
+                                        <th>Acciones</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="inventory-table-body">
+                                    <!-- Inventory loaded here -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- RECEIPT MODAL (Digital View) -->
+        <div class="modal-overlay" id="receipt-modal">
+            <div class="modal glass-card receipt-modal-card">
+                <button class="modal-close" onclick="closeReceiptModal()"><i class="fa-solid fa-xmark"></i></button>
+                <div class="receipt-digital">
+                    <div class="receipt-digital-header">
+                        <div class="receipt-logo">
+                            <i class="fa-solid fa-wine-bottle"></i>
+                        </div>
+                        <h2>NXT Solutions</h2>
+                        <p>Venta de Bebidas</p>
+                        <div class="receipt-meta">
+                            <div class="receipt-meta-item">
+                                <i class="fa-solid fa-hashtag"></i>
+                                <span>Ticket #<strong id="modal-receipt-id"></strong></span>
+                            </div>
+                            <div class="receipt-meta-item">
+                                <i class="fa-solid fa-calendar"></i>
+                                <span id="modal-receipt-date"></span>
+                            </div>
+                            <div class="receipt-meta-item">
+                                <i class="fa-solid fa-user"></i>
+                                <span>Atendió: <strong id="modal-receipt-cashier"></strong></span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="receipt-digital-body">
+                        <table class="receipt-table-digital">
+                            <thead>
+                                <tr>
+                                    <th>Cant.</th>
+                                    <th>Descripción</th>
+                                    <th>P/U</th>
+                                    <th>Subtotal</th>
+                                </tr>
+                            </thead>
+                            <tbody id="modal-receipt-items"></tbody>
+                        </table>
+                    </div>
+                    <div class="receipt-digital-footer">
+                        <div class="receipt-total-digital">
+                            <span>TOTAL</span>
+                            <span id="modal-receipt-total">$0.00</span>
+                        </div>
+                        <div class="receipt-actions-row">
+                            <button class="btn btn-primary" onclick="printCurrentReceipt()">
+                                <i class="fa-solid fa-print"></i> Imprimir
+                            </button>
+                        </div>
+                        <p class="receipt-thanks">¡Gracias por su compra!</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- EDIT PRODUCT MODAL -->
+        <div class="modal-overlay" id="edit-product-modal">
+            <div class="modal glass-card edit-modal-card">
+                <button class="modal-close" onclick="closeEditModal()"><i class="fa-solid fa-xmark"></i></button>
+                <h2><i class="fa-solid fa-pen-to-square"></i> Editar Producto</h2>
+                <form id="edit-product-form">
+                    <input type="hidden" id="edit-codigo">
+                    <div class="input-group">
+                        <i class="fa-solid fa-tag"></i>
+                        <input type="text" id="edit-descripcion" placeholder="Descripción" required>
+                    </div>
+                    <div class="input-group">
+                        <i class="fa-solid fa-dollar-sign"></i>
+                        <input type="number" id="edit-precio" placeholder="Precio" step="0.01" required>
+                    </div>
+                    <div class="input-group">
+                        <i class="fa-solid fa-boxes-stacked"></i>
+                        <input type="number" id="edit-stock" placeholder="Stock" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-large">
+                        <i class="fa-solid fa-floppy-disk"></i> Guardar Cambios
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <!-- HIDDEN RECEIPT TEMPLATE (For actual printing) -->
+        <div id="print-receipt">
+            <div class="receipt-header">
+                <h2>NXT Solutions</h2>
+                <p>Venta de Bebidas</p>
+                <div class="receipt-line"></div>
+                <p>Ticket #<span id="receipt-id"></span></p>
+                <p>Fecha: <span id="receipt-date"></span></p>
+                <p>Cajero: <span id="receipt-cashier"></span></p>
+                <div class="receipt-line"></div>
+            </div>
+            <table class="receipt-table">
+                <thead>
+                    <tr>
+                        <th>Cant</th>
+                        <th>Descripción</th>
+                        <th>P/U</th>
+                        <th>Subt</th>
+                    </tr>
+                </thead>
+                <tbody id="receipt-items"></tbody>
+            </table>
+            <div class="receipt-line"></div>
+            <h3 class="receipt-total">Total: $<span id="receipt-total-amount"></span></h3>
+            <div class="receipt-line"></div>
+            <p class="receipt-footer">¡Gracias por su compra!</p>
+            <p class="receipt-footer-small">NXT Solutions &copy; 2026</p>
+        </div>
+
+    </div>
+
+    <!-- Notification system -->
+    <div id="toast-container"></div>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>
