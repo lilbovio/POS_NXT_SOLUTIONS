@@ -87,6 +87,7 @@ loginForm.addEventListener('submit', async (e) => {
                 loadAdminData();
             } else {
                 document.getElementById('pos-user-label').textContent = currentUser.username;
+                document.getElementById('pos-admin-nav').style.display = 'none';
                 showView('view-pos');
                 loadProducts();
             }
@@ -109,6 +110,7 @@ function logout() {
     document.getElementById('username').value = '';
     document.getElementById('password').value = '';
     document.getElementById('login-error').textContent = '';
+    document.getElementById('pos-admin-nav').style.display = 'none';
     showView('view-login');
     showToast('Sesión cerrada', 'info');
 }
@@ -480,8 +482,19 @@ function switchAdminTab(tab) {
 
 function adminGoToPOS() {
     document.getElementById('pos-user-label').textContent = currentUser.username;
+    document.getElementById('pos-admin-nav').style.display = 'flex';
     showView('view-pos');
     loadProducts();
+}
+
+function showAdminView() {
+    document.getElementById('pos-admin-nav').style.display = 'none';
+    showView('view-admin');
+}
+
+function adminNavigateFromPOS(tab) {
+    showAdminView();
+    switchAdminTab(tab);
 }
 
 // ============================================

@@ -7,7 +7,7 @@ from datetime import datetime
 
 app = Flask(__name__)
 DB_FILE = "pos_database.db"
-EXCEL_FILE = "Base de datos Excel.xlsx"
+EXCEL_FILE = "Basededatos_Actualizada.xlsx"
 
 def get_db():
     conn = sqlite3.connect(DB_FILE)
@@ -62,28 +62,65 @@ def init_db():
     conn.commit()
     conn.close()
 
-def import_excel_data():
+def import_excel_data(force=False):
     conn = get_db()
     c = conn.cursor()
-    c.execute("SELECT COUNT(*) as count FROM products")
-    count = c.fetchone()['count']
-    if count == 0 and os.path.exists(EXCEL_FILE):
+
+    table_exists = c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='products'").fetchone()
+    if not table_exists:
+        conn.close()
+        init_db()
+        conn = get_db()
+        c = conn.cursor()
+
+    if not force:
+        c.execute("SELECT COUNT(*) as count FROM products")
+        count = c.fetchone()['count']
+        if count > 0:
+            conn.close()
+            return
+
+    if os.path.exists(EXCEL_FILE):
         try:
             df = pd.read_excel(EXCEL_FILE)
-            # Clean the PM column: convert to numeric, fill NaN with 0
-            df['PM'] = pd.to_numeric(df['PM'], errors='coerce').fillna(0)
+            df.columns = df.columns.str.strip()
+
+            # Detect price column names
+            price_column = None
+            for candidate in ['PM', 'Precio venta', 'Precio', 'precio', 'precio venta', 'price']:
+                if candidate in df.columns:
+                    price_column = candidate
+                    break
+
+            if price_column is None:
+                raise ValueError('No se encontró columna de precio válida en el Excel.')
+
+            df[price_column] = pd.to_numeric(df[price_column], errors='coerce').fillna(0)
             imported = 0
+            excel_codes = []
+
             for _, row in df.iterrows():
                 codigo = str(row.get('Codigo', '')).strip()
                 desc = str(row.get('Descripcion', '')).strip()
-                precio = float(row.get('PM', 0))
-                
+                precio = float(row.get(price_column, 0))
+
                 if codigo and codigo != 'nan' and desc and desc != 'nan':
-                    c.execute("INSERT OR REPLACE INTO products (codigo, descripcion, precio, stock) VALUES (?, ?, ?, ?)",
-                              (codigo, desc, precio, 0))
+                    excel_codes.append(codigo)
+                    existing = c.execute("SELECT stock FROM products WHERE codigo = ?", (codigo,)).fetchone()
+                    if existing:
+                        c.execute("UPDATE products SET descripcion = ?, precio = ? WHERE codigo = ?",
+                                  (desc, precio, codigo))
+                    else:
+                        c.execute("INSERT INTO products (codigo, descripcion, precio, stock) VALUES (?, ?, ?, ?)",
+                                  (codigo, desc, precio, 0))
                     imported += 1
+
+            if force and excel_codes:
+                placeholders = ",".join("?" for _ in excel_codes)
+                c.execute(f"DELETE FROM products WHERE codigo NOT IN ({placeholders})", tuple(excel_codes))
+
             conn.commit()
-            print(f"Imported {imported} products from Excel.")
+            print(f"Imported/updated {imported} products from Excel.")
         except Exception as e:
             print(f"Error importing excel: {e}")
     conn.close()
@@ -287,6 +324,14 @@ def sync_data():
     conn.commit()
     conn.close()
     return jsonify({"success": True, "message": f"Se sincronizaron {unsynced} ventas a la base de datos remota"})
+
+# Reload Excel products into inventory
+@app.route('/api/admin/reload_products', methods=['POST'])
+def reload_products():
+    if not os.path.exists(EXCEL_FILE):
+        return jsonify({"success": False, "message": f"Archivo de Excel no encontrado: {EXCEL_FILE}"}), 404
+    import_excel_data(force=True)
+    return jsonify({"success": True, "message": "Inventario recargado desde el archivo Excel."})
 
 if __name__ == '__main__':
     init_db()

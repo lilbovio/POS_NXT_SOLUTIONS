@@ -61,6 +61,17 @@
                     <div class="logo-small"><i class="fa-solid fa-wine-bottle"></i> NXT POS</div>
                     <span class="header-divider"></span>
                     <span class="view-badge cashier-badge"><i class="fa-solid fa-cash-register"></i> Caja</span>
+                    <div class="admin-nav" id="pos-admin-nav" style="display:none; margin-left:1rem;">
+                        <button class="btn btn-nav" id="pos-nav-dashboard" onclick="adminNavigateFromPOS('dashboard')">
+                            <i class="fa-solid fa-chart-pie"></i> Dashboard
+                        </button>
+                        <button class="btn btn-nav" id="pos-nav-inventory" onclick="adminNavigateFromPOS('inventory')">
+                            <i class="fa-solid fa-boxes-stacked"></i> Inventario
+                        </button>
+                        <button class="btn btn-nav" id="pos-nav-caja" onclick="adminGoToPOS()">
+                            <i class="fa-solid fa-cash-register"></i> Caja
+                        </button>
+                    </div>
                 </div>
                 <div class="header-actions">
                     <div class="user-pill" id="pos-user-pill">
@@ -358,7 +369,8 @@
         <!-- HIDDEN RECEIPT TEMPLATE (For actual printing) -->
         <div id="print-receipt">
             <div class="receipt-header">
-                <h2>NXT Solutions</h2>
+                <img src="/static/logo.jpg" alt="NXT Solutions Logo" class="receipt-logo">
+                <h2>Tequila & Mezcal</h2>
                 <p>Venta de Bebidas</p>
                 <div class="receipt-line"></div>
                 <p>Ticket #<span id="receipt-id"></span></p>

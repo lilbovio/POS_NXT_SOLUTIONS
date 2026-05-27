@@ -206,16 +206,18 @@ body {
    ============================================ */
 
 #view-login {
-    height: 100vh;
+    min-height: 100vh;
     display: flex;
     align-items: center;
     justify-content: center;
+    padding: 2rem;
 }
 
 .login-wrapper {
     width: 100%;
     max-width: 420px;
     padding: 1rem;
+    margin: auto;
 }
 
 .login-card {
@@ -224,6 +226,7 @@ body {
     border: 1px solid rgba(99, 102, 241, 0.15);
     position: relative;
     overflow: hidden;
+    margin: auto;
 }
 
 .login-card::before {
@@ -1439,6 +1442,24 @@ input:focus ~ .input-glow {
 
     #print-receipt, #print-receipt * {
         visibility: visible;
+    }
+
+    /* Digital modal logo */
+    .receipt-logo img.receipt-logo-img {
+    width: 64px;
+    height: auto;
+    display: block;
+    margin: 0 auto 6px;
+    }
+
+    /* Print logo (sólo para impresión) */
+    @media print {
+    #print-receipt .print-receipt-logo {
+        width: 48px;
+        height: auto;
+        display: block;
+        margin: 0 auto 4px;
+       }
     }
 
     #print-receipt {
