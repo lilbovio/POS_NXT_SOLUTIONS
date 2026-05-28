@@ -78,6 +78,9 @@
                         <i class="fa-solid fa-circle-user"></i>
                         <span id="pos-user-label">Cajero</span>
                     </div>
+                    <button class="btn btn-ghost" id="btn-toggle-currency" onclick="toggleCurrencyMode()">
+                        <i class="fa-solid fa-dollar-sign"></i> MXN
+                    </button>
                     <button class="btn btn-ghost" onclick="logout()"><i class="fa-solid fa-arrow-right-from-bracket"></i> Salir</button>
                 </div>
             </header>
@@ -203,6 +206,15 @@
                                 <h2 id="total-sales-count">0</h2>
                             </div>
                         </div>
+                        <div class="stat-card glass-panel stat-gradient-5">
+                            <div class="stat-icon-wrapper">
+                                <i class="fa-solid fa-dollar-sign"></i>
+                            </div>
+                            <div class="stat-info">
+                                <span class="stat-label">Ingresos USD</span>
+                                <h2 id="all-time-income-usd">$0.00</h2>
+                            </div>
+                        </div>
                         <div class="stat-card glass-panel stat-gradient-4">
                             <div class="stat-icon-wrapper">
                                 <i class="fa-solid fa-cloud-arrow-up"></i>
@@ -210,6 +222,39 @@
                             <div class="stat-info">
                                 <span class="stat-label">Sin Sincronizar</span>
                                 <h2 id="unsynced-count">0</h2>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="admin-panel-row">
+                        <div class="store-sales-overview glass-panel">
+                            <div class="section-header">
+                                <h3><i class="fa-solid fa-store"></i> Ventas por Tienda</h3>
+                            </div>
+                            <div class="exchange-rate-panel">
+                                <div class="exchange-rate-row">
+                                    <div>
+                                        <span class="exchange-rate-label">Tipo de cambio</span>
+                                        <strong id="exchange-rate-value">17.50</strong>
+                                        <span class="exchange-rate-currency">MXN = USD</span>
+                                    </div>
+                                    <div class="exchange-rate-control">
+                                        <input type="number" id="exchange-rate-input" placeholder="17.50" step="0.01" min="0.01">
+                                        <button class="btn btn-primary" id="save-exchange-rate-btn" type="button" onclick="saveExchangeRate()">
+                                            <i class="fa-solid fa-floppy-disk"></i> Guardar
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="exchange-stat-row">
+                                    <span>Ingresos USD hoy: <strong id="today-income-usd">$0.00</strong></span>
+                                    <span>Ingresos USD totales: <strong id="all-time-income-usd-small">$0.00</strong></span>
+                                </div>
+                            </div>
+                            <div class="store-sales-content">
+                                <div id="store-sales-list" class="store-sales-list"></div>
+                                <div class="store-sales-chart-wrapper">
+                                    <canvas id="store-sales-chart" width="400" height="280"></canvas>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -225,8 +270,10 @@
                                     <tr>
                                         <th>ID</th>
                                         <th>Cajero</th>
+                                        <th>Tienda</th>
                                         <th>Fecha</th>
                                         <th>Total</th>
+                                        <th>Total USD</th>
                                         <th>Estado</th>
                                         <th>Acciones</th>
                                     </tr>
@@ -309,6 +356,10 @@
                                 <i class="fa-solid fa-user"></i>
                                 <span>Atendió: <strong id="modal-receipt-cashier"></strong></span>
                             </div>
+                            <div class="receipt-meta-item">
+                                <i class="fa-solid fa-money-bill-wave"></i>
+                                <span>Tipo de cambio: <strong id="modal-exchange-rate"></strong></span>
+                            </div>
                         </div>
                     </div>
                     <div class="receipt-digital-body">
@@ -328,6 +379,10 @@
                         <div class="receipt-total-digital">
                             <span>TOTAL</span>
                             <span id="modal-receipt-total">$0.00</span>
+                        </div>
+                        <div class="receipt-total-digital">
+                            <span>TOTAL USD</span>
+                            <span id="modal-receipt-total-usd">$0.00</span>
                         </div>
                         <div class="receipt-actions-row">
                             <button class="btn btn-primary" onclick="printCurrentReceipt()">
@@ -376,6 +431,7 @@
                 <p>Ticket #<span id="receipt-id"></span></p>
                 <p>Fecha: <span id="receipt-date"></span></p>
                 <p>Cajero: <span id="receipt-cashier"></span></p>
+                <p>Tipo de cambio: <span id="receipt-exchange-rate"></span></p>
                 <div class="receipt-line"></div>
             </div>
             <table class="receipt-table">
@@ -391,6 +447,7 @@
             </table>
             <div class="receipt-line"></div>
             <h3 class="receipt-total">Total: $<span id="receipt-total-amount"></span></h3>
+            <p class="receipt-total">Total USD: $<span id="receipt-total-usd"></span></p>
             <div class="receipt-line"></div>
             <p class="receipt-footer">¡Gracias por su compra!</p>
             <p class="receipt-footer-small">NXT Solutions &copy; 2026</p>
@@ -401,6 +458,7 @@
     <!-- Notification system -->
     <div id="toast-container"></div>
 
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="/static/script.js"></script>
 </body>
 </html>

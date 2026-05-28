@@ -14,6 +14,47 @@ def get_db():
     conn.row_factory = sqlite3.Row
     return conn
 
+
+def add_column_if_not_exists(conn, table, column, definition):
+    cur = conn.cursor()
+    cur.execute(f"PRAGMA table_info({table})")
+    columns = [row['name'] for row in cur.fetchall()]
+    if column not in columns:
+        cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def create_config_entry_if_missing(conn, key, value):
+    cur = conn.cursor()
+    cur.execute("SELECT value FROM config WHERE key = ?", (key,))
+    if not cur.fetchone():
+        cur.execute("INSERT INTO config (key, value) VALUES (?, ?)", (key, str(value)))
+        conn.commit()
+
+
+def get_config_value(conn, key, default=None):
+    cur = conn.cursor()
+    row = cur.execute("SELECT value FROM config WHERE key = ?", (key,)).fetchone()
+    return row['value'] if row else default
+
+
+def set_config_value(conn, key, value):
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, str(value))
+    )
+    conn.commit()
+
+
+def create_user_if_missing(cursor, username, password, role, store='Tienda Principal'):
+    cursor.execute("SELECT id FROM users WHERE username = ?", (username,))
+    if not cursor.fetchone():
+        cursor.execute(
+            "INSERT INTO users (username, password_hash, role, store) VALUES (?, ?, ?, ?)",
+            (username, generate_password_hash(password), role, store)
+        )
+
+
 def init_db():
     conn = get_db()
     c = conn.cursor()
@@ -22,7 +63,8 @@ def init_db():
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT UNIQUE NOT NULL,
                     password_hash TEXT NOT NULL,
-                    role TEXT NOT NULL
+                    role TEXT NOT NULL,
+                    store TEXT DEFAULT 'Tienda Principal'
                 )''')
     
     c.execute('''CREATE TABLE IF NOT EXISTS products (
@@ -38,6 +80,7 @@ def init_db():
                     total REAL NOT NULL,
                     timestamp TEXT NOT NULL,
                     is_synced INTEGER DEFAULT 0,
+                    store TEXT DEFAULT 'Sin tienda',
                     FOREIGN KEY(user_id) REFERENCES users(id)
                 )''')
     
@@ -50,14 +93,22 @@ def init_db():
                     FOREIGN KEY(sale_id) REFERENCES sales(id),
                     FOREIGN KEY(product_codigo) REFERENCES products(codigo)
                 )''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS config (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )''')
+
+    # Add missing columns for older databases
+    add_column_if_not_exists(conn, 'users', 'store', "TEXT DEFAULT 'Tienda Principal'")
+    add_column_if_not_exists(conn, 'sales', 'store', "TEXT DEFAULT 'Sin tienda'")
     
-    # Check if admin user exists
-    c.execute("SELECT id FROM users WHERE username = 'admin'")
-    if not c.fetchone():
-        c.execute("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-                  ('admin', generate_password_hash('admin123'), 'admin'))
-        c.execute("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-                  ('caja', generate_password_hash('caja123'), 'cashier'))
+    create_config_entry_if_missing(conn, 'exchange_rate', 17.5)
+    
+    create_user_if_missing(c, 'admin', 'admin123', 'admin', 'Central')
+    create_user_if_missing(c, 'caja', 'caja123', 'cashier', 'Tienda Principal')
+    create_user_if_missing(c, 'caja1', 'caja1234', 'cashier', 'Tienda Principal')
+    create_user_if_missing(c, 'caja2', 'caja12345', 'cashier', 'Tienda Principal')
         
     conn.commit()
     conn.close()
@@ -141,7 +192,15 @@ def login():
     conn.close()
     
     if user and check_password_hash(user['password_hash'], password):
-        return jsonify({"success": True, "user": {"id": user['id'], "username": user['username'], "role": user['role']}})
+        return jsonify({
+            "success": True,
+            "user": {
+                "id": user['id'],
+                "username": user['username'],
+                "role": user['role'],
+                "store": user['store'] or 'Sin tienda'
+            }
+        })
     return jsonify({"success": False, "message": "Credenciales inválidas"}), 401
 
 # Products
@@ -196,8 +255,15 @@ def register_sale():
     conn = get_db()
     c = conn.cursor()
     timestamp = datetime.now().isoformat()
+
+    store = 'Sin tienda'
+    if user_id:
+        user = c.execute("SELECT store FROM users WHERE id = ?", (user_id,)).fetchone()
+        if user:
+            store = user['store'] or store
     
-    c.execute("INSERT INTO sales (user_id, total, timestamp, is_synced) VALUES (?, ?, ?, 0)", (user_id, total, timestamp))
+    c.execute("INSERT INTO sales (user_id, total, timestamp, is_synced, store) VALUES (?, ?, ?, 0, ?)",
+              (user_id, total, timestamp, store))
     sale_id = c.lastrowid
     
     for item in items:
@@ -272,23 +338,69 @@ def get_income():
     unsynced_count = conn.execute("SELECT COUNT(*) as c FROM sales WHERE is_synced = 0").fetchone()['c']
     all_time_total = conn.execute("SELECT SUM(total) as t FROM sales").fetchone()['t']
     
+    exchange_rate = float(get_config_value(conn, 'exchange_rate', 17.5) or 17.5)
+    if exchange_rate <= 0:
+        exchange_rate = 17.5
+
     # All sales
     sales = conn.execute("""
-        SELECT s.id, u.username, s.total, s.timestamp, s.is_synced 
+        SELECT s.id, u.username, s.total, s.timestamp, s.is_synced, s.store 
         FROM sales s 
         LEFT JOIN users u ON s.user_id = u.id 
         ORDER BY s.timestamp DESC
     """).fetchall()
+
+    store_sales = conn.execute("""
+        SELECT COALESCE(store, 'Sin tienda') AS store, COUNT(*) AS sales_count, SUM(total) AS total
+        FROM sales
+        GROUP BY store
+        ORDER BY total DESC
+    """).fetchall()
+
+    sales_list = []
+    for sale in sales:
+        sale_dict = dict(sale)
+        sale_dict['total_usd'] = round((sale_dict['total'] or 0) / exchange_rate, 2)
+        sales_list.append(sale_dict)
+
     conn.close()
     
     return jsonify({
         "today_total": today_total or 0,
+        "today_total_usd": round((today_total or 0) / exchange_rate, 2),
         "total_sales_count": total_sales_count,
         "total_products": total_products,
         "unsynced_count": unsynced_count,
+        "exchange_rate": exchange_rate,
         "all_time_total": all_time_total or 0,
-        "sales": [dict(s) for s in sales]
+        "all_time_total_usd": round((all_time_total or 0) / exchange_rate, 2),
+        "sales": sales_list,
+        "store_sales": [dict(s) for s in store_sales]
     })
+
+@app.route('/api/exchange-rate', methods=['GET'])
+def get_exchange_rate():
+    conn = get_db()
+    rate = float(get_config_value(conn, 'exchange_rate', 17.5) or 17.5)
+    conn.close()
+    return jsonify({"exchange_rate": rate})
+
+@app.route('/api/admin/exchange-rate', methods=['POST'])
+def update_exchange_rate():
+    data = request.json
+    rate = data.get('exchange_rate')
+    try:
+        rate = float(rate)
+    except (ValueError, TypeError):
+        return jsonify({"success": False, "message": "Tipo de cambio inválido"}), 400
+
+    if rate <= 0:
+        return jsonify({"success": False, "message": "El tipo de cambio debe ser mayor a 0"}), 400
+
+    conn = get_db()
+    set_config_value(conn, 'exchange_rate', rate)
+    conn.close()
+    return jsonify({"success": True, "exchange_rate": rate})
 
 # Admin: inventory with low stock alert
 @app.route('/api/admin/inventory', methods=['GET'])

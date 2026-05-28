@@ -7,6 +7,9 @@ let cart = [];
 let products = [];
 let currentReceiptData = null; // For reprinting
 let inventorySortOrder = 'asc';
+let storeSalesChart = null;
+let exchangeRate = 17.5;
+let isUsdMode = false;
 
 // ============================================
 // DOM Elements
@@ -120,11 +123,23 @@ function logout() {
 // ============================================
 async function loadProducts(query = '') {
     try {
+        await loadExchangeRate();
         const res = await fetch(`/api/products?q=${encodeURIComponent(query)}`);
         products = await res.json();
         renderProducts();
     } catch (err) {
         showToast('Error al cargar productos', 'error');
+    }
+}
+
+async function loadExchangeRate() {
+    try {
+        const res = await fetch('/api/exchange-rate');
+        const data = await res.json();
+        exchangeRate = data.exchange_rate || exchangeRate;
+        updateCurrencyToggleButton();
+    } catch (err) {
+        console.warn('No se pudo cargar el tipo de cambio', err);
     }
 }
 
@@ -169,7 +184,7 @@ function renderProducts() {
         card.innerHTML = `
             <div class="product-code">${escapeHtml(p.codigo)}</div>
             <div class="product-name">${escapeHtml(p.descripcion)}</div>
-            <div class="product-price">$${formatNumber(p.precio)}</div>
+            <div class="product-price">${getDisplayedPrice(p.precio)}</div>
         `;
         card.onclick = () => addToCart(p);
         productGrid.appendChild(card);
@@ -246,8 +261,8 @@ function renderCart() {
         div.innerHTML = `
             <div class="cart-item-info">
                 <h4>${escapeHtml(item.descripcion)}</h4>
-                <span class="cart-item-price">$${formatNumber(item.precio)} c/u</span>
-                <div class="cart-item-subtotal">$${formatNumber(item.subtotal)}</div>
+                <span class="cart-item-price">${getDisplayedPrice(item.precio)} c/u</span>
+                <div class="cart-item-subtotal">${getDisplayedPrice(item.subtotal)}</div>
             </div>
             <div class="cart-controls">
                 <button class="btn btn-icon" onclick="updateCartQuantity('${escapeAttr(item.codigo)}', ${item.quantity - 1})"><i class="fa-solid fa-minus"></i></button>
@@ -259,7 +274,7 @@ function renderCart() {
         cartItemsEl.appendChild(div);
     });
 
-    cartTotal.textContent = `$${formatNumber(total)}`;
+    cartTotal.textContent = getDisplayedPrice(total);
     document.getElementById('cart-item-count').textContent = itemCount;
 }
 
@@ -292,13 +307,17 @@ async function processSale() {
         if (data.success) {
             showToast(`Venta #${data.sale_id} registrada ✓`, 'success');
             
+            const totalUsd = total / exchangeRate;
+            
             // Build receipt data
             const receiptData = {
                 sale_id: data.sale_id,
                 timestamp: data.timestamp,
                 cashier: currentUser.username,
                 items: [...cart],
-                total: total
+                total: total,
+                total_usd: parseFloat(totalUsd.toFixed(2)),
+                exchange_rate: exchangeRate
             };
             
             // Show digital receipt modal
@@ -328,10 +347,13 @@ async function processSale() {
 // Receipt System (Digital + Print)
 // ============================================
 function showReceiptModal(data) {
+    const rate = data.exchange_rate || exchangeRate;
     document.getElementById('modal-receipt-id').textContent = data.sale_id;
     document.getElementById('modal-receipt-date').textContent = formatDate(data.timestamp);
     document.getElementById('modal-receipt-cashier').textContent = data.cashier || 'N/A';
     document.getElementById('modal-receipt-total').textContent = `$${formatNumber(data.total)}`;
+    document.getElementById('modal-exchange-rate').textContent = `1 USD = $${formatNumber(rate)} MXN`;
+    document.getElementById('modal-receipt-total-usd').textContent = `US$ ${formatNumber(data.total_usd || (data.total / rate || 0))}`;
     
     const tbody = document.getElementById('modal-receipt-items');
     tbody.innerHTML = '';
@@ -359,10 +381,13 @@ function closeReceiptModal() {
 }
 
 function fillPrintReceipt(data) {
+    const rate = data.exchange_rate || exchangeRate;
     document.getElementById('receipt-id').textContent = data.sale_id;
     document.getElementById('receipt-date').textContent = formatDate(data.timestamp);
     document.getElementById('receipt-cashier').textContent = data.cashier || currentUser?.username || 'N/A';
     document.getElementById('receipt-total-amount').textContent = formatNumber(data.total);
+    document.getElementById('receipt-exchange-rate').textContent = `1 USD = $${formatNumber(rate)} MXN`;
+    document.getElementById('receipt-total-usd').textContent = formatNumber(data.total_usd || (data.total / rate || 0));
     
     const tbody = document.getElementById('receipt-items');
     tbody.innerHTML = '';
@@ -395,11 +420,14 @@ async function viewReceipt(saleId) {
         
         if (data.success) {
             const r = data.receipt;
+            const usdTotal = (r.total || 0) / exchangeRate;
             showReceiptModal({
                 sale_id: r.sale_id,
                 timestamp: r.timestamp,
                 cashier: r.cashier,
                 total: r.total,
+                total_usd: parseFloat(usdTotal.toFixed(2)),
+                exchange_rate: exchangeRate,
                 items: r.items
             });
         } else {
@@ -418,21 +446,29 @@ async function loadAdminData() {
         const res = await fetch('/api/admin/income');
         const data = await res.json();
 
+        exchangeRate = data.exchange_rate || exchangeRate;
         document.getElementById('today-income').textContent = `$${formatNumber(data.today_total)}`;
         document.getElementById('all-time-income').textContent = `$${formatNumber(data.all_time_total)}`;
         document.getElementById('total-sales-count').textContent = data.total_sales_count;
         document.getElementById('unsynced-count').textContent = data.unsynced_count;
+        document.getElementById('all-time-income-usd').textContent = `US$ ${formatNumber(data.all_time_total_usd)}`;
+        document.getElementById('today-income-usd').textContent = `US$ ${formatNumber(data.today_total_usd)}`;
+        document.getElementById('all-time-income-usd-small').textContent = `US$ ${formatNumber(data.all_time_total_usd)}`;
+        document.getElementById('exchange-rate-value').textContent = formatNumber(exchangeRate);
+        document.getElementById('exchange-rate-input').value = exchangeRate;
+        updateCurrencyToggleButton();
 
         const tbody = document.getElementById('sales-table-body');
         tbody.innerHTML = '';
 
-        if (data.sales.length === 0) {
+        if (!data.sales || data.sales.length === 0) {
             tbody.innerHTML = `
                 <tr>
-                    <td colspan="6" style="text-align:center; color:var(--text-muted); padding:2rem;">
+                    <td colspan="8" style="text-align:center; color:var(--text-muted); padding:2rem;">
                         No hay ventas registradas
                     </td>
                 </tr>`;
+            renderStoreSalesChart(data.store_sales || []);
             return;
         }
 
@@ -444,8 +480,10 @@ async function loadAdminData() {
             tr.innerHTML = `
                 <td><strong>#${s.id}</strong></td>
                 <td>${escapeHtml(s.username || 'Desconocido')}</td>
+                <td>${escapeHtml(s.store || 'Sin tienda')}</td>
                 <td>${formatDate(s.timestamp)}</td>
                 <td><strong>$${formatNumber(s.total)}</strong></td>
+                <td><strong>US$ ${formatNumber(s.total_usd)}</strong></td>
                 <td>${syncBadge}</td>
                 <td>
                     <button class="btn btn-sm btn-ghost" onclick="viewReceipt(${s.id})" title="Ver recibo">
@@ -455,9 +493,129 @@ async function loadAdminData() {
             `;
             tbody.appendChild(tr);
         });
+
+        renderStoreSalesChart(data.store_sales || []);
     } catch (err) {
         showToast("Error al cargar datos de administración", 'error');
     }
+}
+
+async function saveExchangeRate() {
+    const input = document.getElementById('exchange-rate-input');
+    const btn = document.getElementById('save-exchange-rate-btn');
+    const value = parseFloat(input.value);
+
+    if (!value || value <= 0) {
+        showToast('Ingrese un tipo de cambio válido', 'error');
+        return;
+    }
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Guardando...';
+
+    try {
+        const res = await fetch('/api/admin/exchange-rate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ exchange_rate: value })
+        });
+        const data = await res.json();
+
+        if (data.success) {
+            exchangeRate = data.exchange_rate;
+            document.getElementById('exchange-rate-value').textContent = formatNumber(exchangeRate);
+            updateCurrencyToggleButton();
+            loadAdminData();
+            showToast('Tipo de cambio actualizado', 'success');
+        } else {
+            showToast(data.message || 'Error al actualizar el tipo de cambio', 'error');
+        }
+    } catch (err) {
+        showToast('Error al actualizar el tipo de cambio', 'error');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Guardar';
+    }
+}
+
+function toggleCurrencyMode() {
+    isUsdMode = !isUsdMode;
+    updateCurrencyToggleButton();
+    renderProducts();
+    renderCart();
+}
+
+function renderStoreSalesChart(storeSales) {
+    const list = document.getElementById('store-sales-list');
+    const ctx = document.getElementById('store-sales-chart');
+
+    list.innerHTML = '';
+    if (!storeSales || storeSales.length === 0) {
+        list.innerHTML = '<p class="empty-state">No hay ventas por tienda</p>';
+        if (storeSalesChart) {
+            storeSalesChart.destroy();
+            storeSalesChart = null;
+        }
+        return;
+    }
+
+    storeSales.forEach(store => {
+        const row = document.createElement('div');
+        row.className = 'store-sales-row';
+        row.innerHTML = `
+            <div class="store-sales-name">${escapeHtml(store.store || 'Sin tienda')}</div>
+            <div class="store-sales-value">$${formatNumber(store.total)}</div>
+            <div class="store-sales-meta">${store.sales_count} venta${store.sales_count === 1 ? '' : 's'}</div>
+        `;
+        list.appendChild(row);
+    });
+
+    const labels = storeSales.map(item => item.store || 'Sin tienda');
+    const totals = storeSales.map(item => item.total);
+    const backgroundColors = [
+        '#6366f1',
+        '#22c55e',
+        '#f59e0b',
+        '#06b6d4',
+        '#ec4899',
+        '#fb7185',
+        '#14b8a6'
+    ];
+
+    if (storeSalesChart) {
+        storeSalesChart.destroy();
+    }
+
+    storeSalesChart = new Chart(ctx, {
+        type: 'pie',
+        data: {
+            labels,
+            datasets: [{
+                data: totals,
+                backgroundColor: backgroundColors.slice(0, labels.length),
+                borderColor: 'rgba(255,255,255,0.9)',
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: {
+                legend: {
+                    position: 'bottom',
+                    labels: { color: '#f1f5f9' }
+                },
+                tooltip: {
+                    callbacks: {
+                        label: (context) => {
+                            const value = context.raw || 0;
+                            const percentage = ((value / totals.reduce((sum, cur) => sum + cur, 0)) * 100).toFixed(1);
+                            return `${context.label}: $${formatNumber(value)} (${percentage}%)`;
+                        }
+                    }
+                }
+            }
+        }
+    });
 }
 
 // ============================================
@@ -666,6 +824,27 @@ function formatDate(isoString) {
     } catch {
         return isoString;
     }
+}
+
+function formatCurrency(value, currency = 'MXN') {
+    const amount = formatNumber(value || 0);
+    if (currency === 'USD') {
+        return `US$ ${amount}`;
+    }
+    return `$${amount} MXN`;
+}
+
+function getDisplayedPrice(value) {
+    if (isUsdMode) {
+        return formatCurrency((value || 0) / exchangeRate, 'USD');
+    }
+    return formatCurrency(value, 'MXN');
+}
+
+function updateCurrencyToggleButton() {
+    const button = document.getElementById('btn-toggle-currency');
+    if (!button) return;
+    button.innerHTML = `<i class="fa-solid fa-dollar-sign"></i> ${isUsdMode ? 'USD' : 'MXN'}`;
 }
 
 function escapeHtml(str) {

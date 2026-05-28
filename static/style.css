@@ -977,6 +977,75 @@ input:focus ~ .input-glow {
     margin-bottom: 1.5rem;
 }
 
+.admin-panel-row {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+.store-sales-overview {
+    padding: 1.2rem;
+}
+
+.store-sales-content {
+    display: grid;
+    grid-template-columns: 1fr 360px;
+    gap: 1rem;
+    align-items: stretch;
+}
+
+.store-sales-list {
+    display: grid;
+    gap: 0.75rem;
+    max-height: 280px;
+    overflow: auto;
+    padding-right: 0.25rem;
+}
+
+.store-sales-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 0.5rem;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: var(--radius-md);
+    padding: 1rem;
+    align-items: center;
+}
+
+.store-sales-name {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.store-sales-value {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    text-align: right;
+}
+
+.store-sales-meta {
+    grid-column: 1 / -1;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.store-sales-chart-wrapper {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 280px;
+}
+
+.store-sales-chart-wrapper canvas {
+    width: 100% !important;
+    height: auto !important;
+    max-height: 280px;
+}
+
 .stat-card {
     padding: 1.3rem;
     display: flex;
@@ -1006,6 +1075,60 @@ input:focus ~ .input-glow {
 .stat-gradient-2::after { background: var(--gradient-2); }
 .stat-gradient-3::after { background: var(--gradient-3); }
 .stat-gradient-4::after { background: var(--gradient-4); }
+.stat-gradient-5::after { background: linear-gradient(135deg, #10b981 0%, #14b8a6 100%); }
+
+.exchange-rate-panel {
+    padding: 1rem 0 1.5rem;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    margin-bottom: 1rem;
+    display: grid;
+    gap: 1rem;
+}
+
+.exchange-rate-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 1rem;
+}
+
+.exchange-rate-label {
+    display: block;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin-bottom: 0.25rem;
+}
+
+.exchange-rate-currency {
+    display: inline-block;
+    margin-left: 0.5rem;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+}
+
+.exchange-rate-control {
+    display: flex;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.exchange-rate-control input {
+    width: 140px;
+    padding: 0.75rem 1rem;
+    border-radius: var(--radius-md);
+    border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.05);
+    color: var(--text-primary);
+}
+
+.exchange-stat-row {
+    display: flex;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
 
 .stat-icon-wrapper {
     width: 48px;
