@@ -1408,13 +1408,41 @@ input:focus ~ .input-glow {
     width: 100%;
     max-width: 450px;
     padding: 0;
-    overflow: hidden;
+    overflow-y: auto;
+    max-height: 90vh;
+    scrollbar-width: thin;
+    scrollbar-color: #8b5cf6 rgba(255,255,255,0.05);
+}
+.receipt-modal-card::-webkit-scrollbar {
+    width: 8px;
+}
+
+.receipt-modal-card::-webkit-scrollbar-track {
+    background: rgba(255,255,255,0.05);
+    border-radius: 10px;
+}
+
+.receipt-modal-card::-webkit-scrollbar-thumb {
+    background: linear-gradient(
+        180deg,
+        #8b5cf6,
+        #22c55e
+    );
+    border-radius: 10px;
+}
+
+.receipt-modal-card::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(
+        180deg,
+        #a855f7,
+        #4ade80
+    );
 }
 
 .receipt-digital {
     padding: 0;
+    max-height: 90vh;
 }
-
 .receipt-digital-header {
     background: var(--gradient-1);
     padding: 2rem 1.5rem 1.5rem;

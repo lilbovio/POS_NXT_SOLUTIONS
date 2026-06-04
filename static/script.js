@@ -431,8 +431,33 @@ function showReceiptModal(data) {
     document.getElementById('modal-receipt-subtotal').textContent = `$${formatNumber(data.subtotal || data.total)}`;
     document.getElementById('modal-receipt-discount').textContent = `-$${formatNumber(data.discount || 0)}`;
     document.getElementById('modal-receipt-payment').textContent = data.payment_method || 'efectivo';
+    const modalPaymentDetails = document.getElementById('modal-payment-details');
+
+if (data.payment_method === 'mixto') {
+    modalPaymentDetails.innerHTML = `
+        <div class="receipt-total-digital">
+            <span>EFECTIVO</span>
+            <span>$${formatNumber(data.cash_amount || 0)}</span>
+        </div>
+
+        <div class="receipt-total-digital">
+            <span>TARJETA</span>
+            <span>$${formatNumber(data.card_amount || 0)}</span>
+        </div>
+    `;
+} else {
+    modalPaymentDetails.innerHTML = '';
+}
     document.getElementById('modal-exchange-rate').textContent = `1 USD = $${formatNumber(rate)} MXN`;
-    document.getElementById('modal-receipt-total-usd').textContent = `US$ ${formatNumber(data.total_usd || (data.total / rate || 0))}`;
+const modalUsdRow = document.getElementById('modal-receipt-total-usd').parentElement;
+
+if (isUsdMode) {
+    modalUsdRow.style.display = 'flex';
+    document.getElementById('modal-receipt-total-usd').textContent =
+        `US$ ${formatNumber(data.total_usd || (data.total / rate || 0))}`;
+} else {
+    modalUsdRow.style.display = 'none';
+}
     
     const tbody = document.getElementById('modal-receipt-items');
     tbody.innerHTML = '';
@@ -467,8 +492,29 @@ function fillPrintReceipt(data) {
     document.getElementById('receipt-total-amount').textContent = formatNumber(data.total);
     document.getElementById('receipt-subtotal').textContent =formatNumber(data.subtotal || data.total);
     document.getElementById('receipt-discount').textContent ='-' + formatNumber(data.discount || 0);
+    const paymentInfo = document.getElementById('receipt-payment-details');
+
+if (data.payment_method === 'mixto') {
+    paymentInfo.innerHTML = `
+        <p>Método: Mixto</p>
+        <p>Efectivo: $${formatNumber(data.cash_amount || 0)}</p>
+        <p>Tarjeta: $${formatNumber(data.card_amount || 0)}</p>
+    `;
+} else {
+    paymentInfo.innerHTML = `
+        <p>Método: ${data.payment_method || 'efectivo'}</p>
+    `;
+}
     document.getElementById('receipt-exchange-rate').textContent = `1 USD = $${formatNumber(rate)} MXN`;
-    document.getElementById('receipt-total-usd').textContent = formatNumber(data.total_usd || (data.total / rate || 0));
+const printUsdRow = document.getElementById('receipt-total-usd').parentElement;
+
+if (isUsdMode) {
+    printUsdRow.style.display = 'block';
+    document.getElementById('receipt-total-usd').textContent =
+        formatNumber(data.total_usd || (data.total / rate || 0));
+} else {
+    printUsdRow.style.display = 'none';
+}
     
     const tbody = document.getElementById('receipt-items');
     tbody.innerHTML = '';
