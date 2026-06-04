@@ -81,6 +81,11 @@ def init_db():
                     timestamp TEXT NOT NULL,
                     is_synced INTEGER DEFAULT 0,
                     store TEXT DEFAULT 'Sin tienda',
+                    subtotal REAL DEFAULT 0,
+                    discount REAL DEFAULT 0,
+                    payment_method TEXT DEFAULT 'efectivo',
+                    cash_amount REAL DEFAULT 0,
+                    card_amount REAL DEFAULT 0,
                     FOREIGN KEY(user_id) REFERENCES users(id)
                 )''')
     
@@ -102,6 +107,11 @@ def init_db():
     # Add missing columns for older databases
     add_column_if_not_exists(conn, 'users', 'store', "TEXT DEFAULT 'Tienda Principal'")
     add_column_if_not_exists(conn, 'sales', 'store', "TEXT DEFAULT 'Sin tienda'")
+    add_column_if_not_exists(conn, 'sales', 'subtotal', "REAL DEFAULT 0")
+    add_column_if_not_exists(conn, 'sales', 'discount', "REAL DEFAULT 0")
+    add_column_if_not_exists(conn, 'sales', 'payment_method', "TEXT DEFAULT 'efectivo'")
+    add_column_if_not_exists(conn, 'sales', 'cash_amount', "REAL DEFAULT 0")
+    add_column_if_not_exists(conn, 'sales', 'card_amount', "REAL DEFAULT 0")
     
     create_config_entry_if_missing(conn, 'exchange_rate', 17.5)
     
@@ -246,11 +256,54 @@ def update_product(codigo):
 def register_sale():
     data = request.json
     user_id = data.get('user_id')
-    items = data.get('items', []) # [{'codigo': 'T1', 'quantity': 2, 'subtotal': 1306.0}]
-    total = data.get('total', 0)
+    items = data.get('items', [])
+
+    discount = float(data.get('discount', 0))
+    payment_method = data.get('payment_method', 'efectivo')
+    cash_amount = float(data.get('cash_amount', 0))
+    card_amount = float(data.get('card_amount', 0))
     
     if not items:
         return jsonify({"success": False, "message": "El carrito está vacío"}), 400
+
+    if discount < 0:
+        return jsonify({"success": False, "message": "El descuento no puede ser negativo"}), 400
+
+    valid_methods = ['efectivo', 'tarjeta', 'mixto']
+
+    if payment_method not in valid_methods:
+        return jsonify({"success": False, "message": "Método de pago inválido"}), 400
+
+    subtotal = 0
+
+    for item in items:
+        quantity = int(item.get('quantity', 0))
+        precio = float(item.get('precio', 0))
+
+        if quantity <= 0:
+            return jsonify({"success": False, "message": "Cantidad inválida"}), 400
+
+        subtotal += precio * quantity
+
+    if discount > subtotal:
+        return jsonify({"success": False, "message": "El descuento no puede ser mayor al subtotal"}), 400
+
+    total = subtotal - discount
+
+    if payment_method == 'efectivo':
+        cash_amount = total
+        card_amount = 0
+
+    elif payment_method == 'tarjeta':
+        cash_amount = 0
+        card_amount = total
+
+    elif payment_method == 'mixto':
+        if cash_amount < 0 or card_amount < 0:
+            return jsonify({"success": False, "message": "Los montos no pueden ser negativos"}), 400
+
+        if round(cash_amount + card_amount, 2) != round(total, 2):
+            return jsonify({"success": False, "message": "La suma del pago mixto debe ser igual al total"}), 400
         
     conn = get_db()
     c = conn.cursor()
@@ -262,20 +315,64 @@ def register_sale():
         if user:
             store = user['store'] or store
     
-    c.execute("INSERT INTO sales (user_id, total, timestamp, is_synced, store) VALUES (?, ?, ?, 0, ?)",
-              (user_id, total, timestamp, store))
+    c.execute("""
+        INSERT INTO sales (
+            user_id,
+            subtotal,
+            discount,
+            total,
+            payment_method,
+            cash_amount,
+            card_amount,
+            timestamp,
+            is_synced,
+            store
+        ) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+    """, (
+        user_id,
+        subtotal,
+        discount,
+        total,
+        payment_method,
+        cash_amount,
+        card_amount,
+        timestamp,
+        store
+    ))
+
     sale_id = c.lastrowid
     
     for item in items:
-        c.execute("INSERT INTO sale_items (sale_id, product_codigo, quantity, subtotal) VALUES (?, ?, ?, ?)",
-                  (sale_id, item['codigo'], item['quantity'], item['subtotal']))
-        # Decrease stock
-        c.execute("UPDATE products SET stock = stock - ? WHERE codigo = ?", (item['quantity'], item['codigo']))
+        quantity = int(item['quantity'])
+        precio = float(item.get('precio', 0))
+        subtotal_producto = precio * quantity
+
+        c.execute(
+            "INSERT INTO sale_items (sale_id, product_codigo, quantity, subtotal) VALUES (?, ?, ?, ?)",
+            (sale_id, item['codigo'], quantity, subtotal_producto)
+        )
+
+        c.execute(
+            "UPDATE products SET stock = stock - ? WHERE codigo = ?",
+            (quantity, item['codigo'])
+        )
         
     conn.commit()
     conn.close()
-    return jsonify({"success": True, "sale_id": sale_id, "timestamp": timestamp})
 
+    return jsonify({
+        "success": True,
+        "sale_id": sale_id,
+        "timestamp": timestamp,
+        "subtotal": subtotal,
+        "discount": discount,
+        "total": total,
+        "payment_method": payment_method,
+        "cash_amount": cash_amount,
+        "card_amount": card_amount,
+        "store": store
+    })
 # Get sale details (items) for a specific sale
 @app.route('/api/sales/<int:sale_id>/items', methods=['GET'])
 def get_sale_items(sale_id):

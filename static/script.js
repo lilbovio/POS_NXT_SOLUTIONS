@@ -248,7 +248,7 @@ function renderCart() {
                 <p>Carrito vacío</p>
                 <span>Selecciona productos para agregar</span>
             </div>`;
-        cartTotal.textContent = '$0.00';
+        cartTotal.textContent = getDisplayedPrice(0);
         document.getElementById('cart-item-count').textContent = '0';
         return;
     }
@@ -274,8 +274,25 @@ function renderCart() {
         cartItemsEl.appendChild(div);
     });
 
-    cartTotal.textContent = getDisplayedPrice(total);
-    document.getElementById('cart-item-count').textContent = itemCount;
+  const discount =
+    parseFloat(document.getElementById('sale-discount')?.value) || 0;
+
+const validDiscount =
+    Math.min(Math.max(discount, 0), total);
+
+const finalTotal = total - validDiscount;
+
+document.getElementById('cart-subtotal').textContent =
+    getDisplayedPrice(total);
+
+document.getElementById('cart-discount').textContent =
+    '-' + getDisplayedPrice(validDiscount);
+
+cartTotal.textContent =
+    getDisplayedPrice(finalTotal);
+
+document.getElementById('cart-item-count').textContent =
+    itemCount;
 }
 
 // ============================================
@@ -286,8 +303,52 @@ async function processSale() {
         showToast("El carrito está vacío", 'error');
         return;
     }
+    const subtotal = cart.reduce((sum, item) => sum + item.subtotal, 0);
 
-    const total = cart.reduce((sum, item) => sum + item.subtotal, 0);
+const discount =
+    parseFloat(document.getElementById('sale-discount')?.value) || 0;
+
+if (discount < 0) {
+    showToast("El descuento no puede ser negativo", 'error');
+    return;
+}
+
+if (discount > subtotal) {
+    showToast("El descuento no puede ser mayor al total", 'error');
+    return;
+}
+
+const total = subtotal - discount;
+
+const paymentMethod =
+    document.getElementById('payment-method')?.value || 'efectivo';
+
+let cashAmount =
+    parseFloat(document.getElementById('cash-amount')?.value) || 0;
+
+let cardAmount =
+    parseFloat(document.getElementById('card-amount')?.value) || 0;
+    if (paymentMethod === 'efectivo') {
+    cashAmount = total;
+    cardAmount = 0;
+}
+
+if (paymentMethod === 'tarjeta') {
+    cashAmount = 0;
+    cardAmount = total;
+}
+
+if (paymentMethod === 'mixto') {
+    if (cashAmount < 0 || cardAmount < 0) {
+        showToast("Los montos de pago no pueden ser negativos", 'error');
+        return;
+    }
+
+    if (roundMoney(cashAmount + cardAmount) !== roundMoney(total)) {
+        showToast("La suma del pago mixto debe ser igual al total con descuento", 'error');
+        return;
+    }
+}
     const btn = document.getElementById('btn-checkout');
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span> Procesando...';
@@ -296,11 +357,14 @@ async function processSale() {
         const res = await fetch('/api/sales', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
+           body: JSON.stringify({
                 user_id: currentUser.id,
                 items: cart,
-                total: total
-            })
+                discount: discount,
+                payment_method: paymentMethod,
+                cash_amount: cashAmount,
+                card_amount: cardAmount
+                })
         });
         const data = await res.json();
 
@@ -314,8 +378,18 @@ async function processSale() {
                 sale_id: data.sale_id,
                 timestamp: data.timestamp,
                 cashier: currentUser.username,
+
                 items: [...cart],
+
+                subtotal: subtotal,
+                discount: discount,
+
                 total: total,
+
+                payment_method: paymentMethod,
+                cash_amount: cashAmount,
+                card_amount: cardAmount,
+
                 total_usd: parseFloat(totalUsd.toFixed(2)),
                 exchange_rate: exchangeRate
             };
@@ -331,6 +405,8 @@ async function processSale() {
             
             // Clear cart after processing
             cart = [];
+            renderCart();
+            document.getElementById('sale-discount').value = 0;
             renderCart();
         } else {
             showToast("Error: " + data.message, 'error');
@@ -352,8 +428,36 @@ function showReceiptModal(data) {
     document.getElementById('modal-receipt-date').textContent = formatDate(data.timestamp);
     document.getElementById('modal-receipt-cashier').textContent = data.cashier || 'N/A';
     document.getElementById('modal-receipt-total').textContent = `$${formatNumber(data.total)}`;
+    document.getElementById('modal-receipt-subtotal').textContent = `$${formatNumber(data.subtotal || data.total)}`;
+    document.getElementById('modal-receipt-discount').textContent = `-$${formatNumber(data.discount || 0)}`;
+    document.getElementById('modal-receipt-payment').textContent = data.payment_method || 'efectivo';
+    const modalPaymentDetails = document.getElementById('modal-payment-details');
+
+if (data.payment_method === 'mixto') {
+    modalPaymentDetails.innerHTML = `
+        <div class="receipt-total-digital">
+            <span>EFECTIVO</span>
+            <span>$${formatNumber(data.cash_amount || 0)}</span>
+        </div>
+
+        <div class="receipt-total-digital">
+            <span>TARJETA</span>
+            <span>$${formatNumber(data.card_amount || 0)}</span>
+        </div>
+    `;
+} else {
+    modalPaymentDetails.innerHTML = '';
+}
     document.getElementById('modal-exchange-rate').textContent = `1 USD = $${formatNumber(rate)} MXN`;
-    document.getElementById('modal-receipt-total-usd').textContent = `US$ ${formatNumber(data.total_usd || (data.total / rate || 0))}`;
+const modalUsdRow = document.getElementById('modal-receipt-total-usd').parentElement;
+
+if (isUsdMode) {
+    modalUsdRow.style.display = 'flex';
+    document.getElementById('modal-receipt-total-usd').textContent =
+        `US$ ${formatNumber(data.total_usd || (data.total / rate || 0))}`;
+} else {
+    modalUsdRow.style.display = 'none';
+}
     
     const tbody = document.getElementById('modal-receipt-items');
     tbody.innerHTML = '';
@@ -386,8 +490,31 @@ function fillPrintReceipt(data) {
     document.getElementById('receipt-date').textContent = formatDate(data.timestamp);
     document.getElementById('receipt-cashier').textContent = data.cashier || currentUser?.username || 'N/A';
     document.getElementById('receipt-total-amount').textContent = formatNumber(data.total);
+    document.getElementById('receipt-subtotal').textContent =formatNumber(data.subtotal || data.total);
+    document.getElementById('receipt-discount').textContent ='-' + formatNumber(data.discount || 0);
+    const paymentInfo = document.getElementById('receipt-payment-details');
+
+if (data.payment_method === 'mixto') {
+    paymentInfo.innerHTML = `
+        <p>Método: Mixto</p>
+        <p>Efectivo: $${formatNumber(data.cash_amount || 0)}</p>
+        <p>Tarjeta: $${formatNumber(data.card_amount || 0)}</p>
+    `;
+} else {
+    paymentInfo.innerHTML = `
+        <p>Método: ${data.payment_method || 'efectivo'}</p>
+    `;
+}
     document.getElementById('receipt-exchange-rate').textContent = `1 USD = $${formatNumber(rate)} MXN`;
-    document.getElementById('receipt-total-usd').textContent = formatNumber(data.total_usd || (data.total / rate || 0));
+const printUsdRow = document.getElementById('receipt-total-usd').parentElement;
+
+if (isUsdMode) {
+    printUsdRow.style.display = 'block';
+    document.getElementById('receipt-total-usd').textContent =
+        formatNumber(data.total_usd || (data.total / rate || 0));
+} else {
+    printUsdRow.style.display = 'none';
+}
     
     const tbody = document.getElementById('receipt-items');
     tbody.innerHTML = '';
@@ -421,15 +548,17 @@ async function viewReceipt(saleId) {
         if (data.success) {
             const r = data.receipt;
             const usdTotal = (r.total || 0) / exchangeRate;
-            showReceiptModal({
-                sale_id: r.sale_id,
-                timestamp: r.timestamp,
-                cashier: r.cashier,
-                total: r.total,
-                total_usd: parseFloat(usdTotal.toFixed(2)),
-                exchange_rate: exchangeRate,
-                items: r.items
-            });
+      showReceiptModal({
+            sale_id: r.sale_id,
+            timestamp: r.timestamp,
+            cashier: r.cashier,
+            subtotal: r.subtotal || r.total,
+            discount: r.discount || 0,
+            total: r.total,
+            total_usd: parseFloat(usdTotal.toFixed(2)),
+            exchange_rate: exchangeRate,
+            items: r.items
+        });
         } else {
             showToast('No se pudo cargar el recibo', 'error');
         }
@@ -872,7 +1001,48 @@ document.addEventListener('keydown', (e) => {
         document.querySelectorAll('.modal-overlay.active').forEach(m => m.classList.remove('active'));
     }
 });
+const paymentMethodSelect =
+    document.getElementById('payment-method');
 
+if (paymentMethodSelect) {
+
+    paymentMethodSelect.addEventListener('change', () => {
+
+        const mixedFields =
+            document.getElementById('mixed-payment-fields');
+
+        if (paymentMethodSelect.value === 'mixto') {
+
+            mixedFields.style.display = 'block';
+
+        } else {
+
+            mixedFields.style.display = 'none';
+
+            document.getElementById('cash-amount').value = 0;
+            document.getElementById('card-amount').value = 0;
+        }
+
+    });
+
+}
+
+const saleDiscountInput =
+    document.getElementById('sale-discount');
+
+if (saleDiscountInput) {
+
+    saleDiscountInput.addEventListener('input', () => {
+
+        renderCart();
+
+    });
+
+}  
+
+function roundMoney(value) {
+    return Math.round((value || 0) * 100) / 100;
+}
 // ============================================
 // Initialize
 // ============================================
