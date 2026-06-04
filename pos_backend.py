@@ -9,6 +9,13 @@ app = Flask(__name__)
 DB_FILE = "pos_database.db"
 EXCEL_FILE = "Basededatos_Actualizada.xlsx"
 
+try: 
+    from config import STORE_ID, STORE_NAME, CENTRAL_SERVER_URL
+except ImportError:
+    STORE_ID = "1"
+    STORE_NAME = "Aeropuerto"
+    CENTRAL_SERVER_URL = "http://localhost:5000"
+
 def get_db():
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
