@@ -5,3 +5,4 @@ pywebview
 pyinstaller
 matplotlib
 networkx
+requests

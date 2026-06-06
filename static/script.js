@@ -8,6 +8,7 @@ let products = [];
 let currentReceiptData = null; // For reprinting
 let inventorySortOrder = 'asc';
 let storeSalesChart = null;
+let cashierSalesChart = null;
 let exchangeRate = 17.5;
 let isUsdMode = false;
 
@@ -51,7 +52,7 @@ function showToast(message, type = 'info') {
     toast.className = `toast toast-${type}`;
     toast.innerHTML = `<i class="fa-solid ${icons[type] || icons.info}"></i> ${message}`;
     toastContainer.appendChild(toast);
-    
+
     setTimeout(() => {
         toast.classList.add('removing');
         setTimeout(() => toast.remove(), 300);
@@ -83,11 +84,21 @@ loginForm.addEventListener('submit', async (e) => {
         if (data.success) {
             currentUser = data.user;
             showToast(`Bienvenido, ${currentUser.username}`, 'success');
-            
+
             if (currentUser.role === 'admin') {
                 document.getElementById('admin-user-label').textContent = currentUser.username;
+                document.getElementById('nav-dashboard').style.display = 'inline-flex';
+                document.getElementById('nav-pos').style.display = 'inline-flex';
+                if(document.getElementById('btn-sync')) document.getElementById('btn-sync').style.display = 'inline-flex';
                 showView('view-admin');
                 loadAdminData();
+            } else if (currentUser.role === 'almacen') {
+                document.getElementById('admin-user-label').textContent = currentUser.username;
+                document.getElementById('nav-dashboard').style.display = 'none';
+                document.getElementById('nav-pos').style.display = 'none';
+                if(document.getElementById('btn-sync')) document.getElementById('btn-sync').style.display = 'none';
+                showView('view-admin');
+                switchAdminTab('inventory');
             } else {
                 document.getElementById('pos-user-label').textContent = currentUser.username;
                 document.getElementById('pos-admin-nav').style.display = 'none';
@@ -164,11 +175,11 @@ document.addEventListener('keydown', (e) => {
 
 function renderProducts() {
     productGrid.innerHTML = '';
-    
+
     // Update count badge
     const countBadge = document.getElementById('product-count-badge');
     if (countBadge) countBadge.textContent = `${products.length} productos`;
-    
+
     if (products.length === 0) {
         productGrid.innerHTML = `
             <div class="empty-state">
@@ -274,25 +285,25 @@ function renderCart() {
         cartItemsEl.appendChild(div);
     });
 
-  const discount =
-    parseFloat(document.getElementById('sale-discount')?.value) || 0;
+    const discount =
+        parseFloat(document.getElementById('sale-discount')?.value);
 
-const validDiscount =
-    Math.min(Math.max(discount, 0), total);
+    const validDiscount =
+        Math.min(Math.max(discount), total);
 
-const finalTotal = total - validDiscount;
+    const finalTotal = total - validDiscount;
 
-document.getElementById('cart-subtotal').textContent =
-    getDisplayedPrice(total);
+    document.getElementById('cart-subtotal').textContent =
+        getDisplayedPrice(total);
 
-document.getElementById('cart-discount').textContent =
-    '-' + getDisplayedPrice(validDiscount);
+    document.getElementById('cart-discount').textContent =
+        '-' + getDisplayedPrice(validDiscount);
 
-cartTotal.textContent =
-    getDisplayedPrice(finalTotal);
+    cartTotal.textContent =
+        getDisplayedPrice(finalTotal);
 
-document.getElementById('cart-item-count').textContent =
-    itemCount;
+    document.getElementById('cart-item-count').textContent =
+        itemCount;
 }
 
 // ============================================
@@ -305,50 +316,54 @@ async function processSale() {
     }
     const subtotal = cart.reduce((sum, item) => sum + item.subtotal, 0);
 
-const discount =
-    parseFloat(document.getElementById('sale-discount')?.value) || 0;
+    const discount =
+        parseFloat(document.getElementById('sale-discount')?.value);
 
-if (discount < 0) {
-    showToast("El descuento no puede ser negativo", 'error');
-    return;
-}
+    if (discount < 0) {
+        showToast("El descuento no puede ser negativo", 'error');
+        return;
+    }
 
-if (discount > subtotal) {
-    showToast("El descuento no puede ser mayor al total", 'error');
-    return;
-}
+    if (discount > subtotal) {
+        showToast("El descuento no puede ser mayor al total", 'error');
+        return;
+    }
 
-const total = subtotal - discount;
+    if (discount == subtotal && subtotal > 0) {
+        showToast("El descuento es del 100%, la botella se registrará para degustación", "info");
+    }
 
-const paymentMethod =
-    document.getElementById('payment-method')?.value || 'efectivo';
+    const total = subtotal - discount;
 
-let cashAmount =
-    parseFloat(document.getElementById('cash-amount')?.value) || 0;
+    const paymentMethod =
+        document.getElementById('payment-method')?.value || 'efectivo';
 
-let cardAmount =
-    parseFloat(document.getElementById('card-amount')?.value) || 0;
+    let cashAmount =
+        parseFloat(document.getElementById('cash-amount')?.value);
+
+    let cardAmount =
+        parseFloat(document.getElementById('card-amount')?.value);
     if (paymentMethod === 'efectivo') {
-    cashAmount = total;
-    cardAmount = 0;
-}
-
-if (paymentMethod === 'tarjeta') {
-    cashAmount = 0;
-    cardAmount = total;
-}
-
-if (paymentMethod === 'mixto') {
-    if (cashAmount < 0 || cardAmount < 0) {
-        showToast("Los montos de pago no pueden ser negativos", 'error');
-        return;
+        cashAmount = total;
+        cardAmount = 0;
     }
 
-    if (roundMoney(cashAmount + cardAmount) !== roundMoney(total)) {
-        showToast("La suma del pago mixto debe ser igual al total con descuento", 'error');
-        return;
+    if (paymentMethod === 'tarjeta') {
+        cashAmount = 0;
+        cardAmount = total;
     }
-}
+
+    if (paymentMethod === 'mixto') {
+        if (cashAmount < 0 || cardAmount < 0) {
+            showToast("Los montos de pago no pueden ser negativos", 'error');
+            return;
+        }
+
+        if (roundMoney(cashAmount + cardAmount) !== roundMoney(total)) {
+            showToast("La suma del pago mixto debe ser igual al total con descuento", 'error');
+            return;
+        }
+    }
     const btn = document.getElementById('btn-checkout');
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span> Procesando...';
@@ -357,22 +372,22 @@ if (paymentMethod === 'mixto') {
         const res = await fetch('/api/sales', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-           body: JSON.stringify({
+            body: JSON.stringify({
                 user_id: currentUser.id,
                 items: cart,
                 discount: discount,
                 payment_method: paymentMethod,
                 cash_amount: cashAmount,
                 card_amount: cardAmount
-                })
+            })
         });
         const data = await res.json();
 
         if (data.success) {
             showToast(`Venta #${data.sale_id} registrada ✓`, 'success');
-            
+
             const totalUsd = total / exchangeRate;
-            
+
             // Build receipt data
             const receiptData = {
                 sale_id: data.sale_id,
@@ -393,16 +408,16 @@ if (paymentMethod === 'mixto') {
                 total_usd: parseFloat(totalUsd.toFixed(2)),
                 exchange_rate: exchangeRate
             };
-            
+
             // Show digital receipt modal
             showReceiptModal(receiptData);
-            
+
             // Also prepare the hidden print receipt
             fillPrintReceipt(receiptData);
-            
+
             // Store for reprinting
             currentReceiptData = receiptData;
-            
+
             // Clear cart after processing
             cart = [];
             renderCart();
@@ -424,6 +439,9 @@ if (paymentMethod === 'mixto') {
 // ============================================
 function showReceiptModal(data) {
     const rate = data.exchange_rate || exchangeRate;
+    const isDegustacion = (data.discount === data.subtotal && data.subtotal > 0);
+    document.getElementById('modal-receipt-degustacion').style.display = isDegustacion ? 'block' : 'none';
+
     document.getElementById('modal-receipt-id').textContent = data.sale_id;
     document.getElementById('modal-receipt-date').textContent = formatDate(data.timestamp);
     document.getElementById('modal-receipt-cashier').textContent = data.cashier || 'N/A';
@@ -433,8 +451,8 @@ function showReceiptModal(data) {
     document.getElementById('modal-receipt-payment').textContent = data.payment_method || 'efectivo';
     const modalPaymentDetails = document.getElementById('modal-payment-details');
 
-if (data.payment_method === 'mixto') {
-    modalPaymentDetails.innerHTML = `
+    if (data.payment_method === 'mixto') {
+        modalPaymentDetails.innerHTML = `
         <div class="receipt-total-digital">
             <span>EFECTIVO</span>
             <span>$${formatNumber(data.cash_amount || 0)}</span>
@@ -445,23 +463,23 @@ if (data.payment_method === 'mixto') {
             <span>$${formatNumber(data.card_amount || 0)}</span>
         </div>
     `;
-} else {
-    modalPaymentDetails.innerHTML = '';
-}
+    } else {
+        modalPaymentDetails.innerHTML = '';
+    }
     document.getElementById('modal-exchange-rate').textContent = `1 USD = $${formatNumber(rate)} MXN`;
-const modalUsdRow = document.getElementById('modal-receipt-total-usd').parentElement;
+    const modalUsdRow = document.getElementById('modal-receipt-total-usd').parentElement;
 
-if (isUsdMode) {
-    modalUsdRow.style.display = 'flex';
-    document.getElementById('modal-receipt-total-usd').textContent =
-        `US$ ${formatNumber(data.total_usd || (data.total / rate || 0))}`;
-} else {
-    modalUsdRow.style.display = 'none';
-}
-    
+    if (isUsdMode) {
+        modalUsdRow.style.display = 'flex';
+        document.getElementById('modal-receipt-total-usd').textContent =
+            `US$ ${formatNumber(data.total_usd || (data.total / rate || 0))}`;
+    } else {
+        modalUsdRow.style.display = 'none';
+    }
+
     const tbody = document.getElementById('modal-receipt-items');
     tbody.innerHTML = '';
-    
+
     data.items.forEach(item => {
         const tr = document.createElement('tr');
         const unitPrice = item.unit_price || item.precio || (item.subtotal / item.quantity);
@@ -473,10 +491,10 @@ if (isUsdMode) {
         `;
         tbody.appendChild(tr);
     });
-    
+
     // Store for printing
     currentReceiptData = data;
-    
+
     document.getElementById('receipt-modal').classList.add('active');
 }
 
@@ -486,39 +504,42 @@ function closeReceiptModal() {
 
 function fillPrintReceipt(data) {
     const rate = data.exchange_rate || exchangeRate;
+    const isDegustacion = (data.discount === data.subtotal && data.subtotal > 0);
+    document.getElementById('receipt-degustacion').style.display = isDegustacion ? 'block' : 'none';
+
     document.getElementById('receipt-id').textContent = data.sale_id;
     document.getElementById('receipt-date').textContent = formatDate(data.timestamp);
     document.getElementById('receipt-cashier').textContent = data.cashier || currentUser?.username || 'N/A';
     document.getElementById('receipt-total-amount').textContent = formatNumber(data.total);
-    document.getElementById('receipt-subtotal').textContent =formatNumber(data.subtotal || data.total);
-    document.getElementById('receipt-discount').textContent ='-' + formatNumber(data.discount || 0);
+    document.getElementById('receipt-subtotal').textContent = formatNumber(data.subtotal || data.total);
+    document.getElementById('receipt-discount').textContent = '-' + formatNumber(data.discount || 0);
     const paymentInfo = document.getElementById('receipt-payment-details');
 
-if (data.payment_method === 'mixto') {
-    paymentInfo.innerHTML = `
+    if (data.payment_method === 'mixto') {
+        paymentInfo.innerHTML = `
         <p>Método: Mixto</p>
         <p>Efectivo: $${formatNumber(data.cash_amount || 0)}</p>
         <p>Tarjeta: $${formatNumber(data.card_amount || 0)}</p>
     `;
-} else {
-    paymentInfo.innerHTML = `
+    } else {
+        paymentInfo.innerHTML = `
         <p>Método: ${data.payment_method || 'efectivo'}</p>
     `;
-}
+    }
     document.getElementById('receipt-exchange-rate').textContent = `1 USD = $${formatNumber(rate)} MXN`;
-const printUsdRow = document.getElementById('receipt-total-usd').parentElement;
+    const printUsdRow = document.getElementById('receipt-total-usd').parentElement;
 
-if (isUsdMode) {
-    printUsdRow.style.display = 'block';
-    document.getElementById('receipt-total-usd').textContent =
-        formatNumber(data.total_usd || (data.total / rate || 0));
-} else {
-    printUsdRow.style.display = 'none';
-}
-    
+    if (isUsdMode) {
+        printUsdRow.style.display = 'block';
+        document.getElementById('receipt-total-usd').textContent =
+            formatNumber(data.total_usd || (data.total / rate || 0));
+    } else {
+        printUsdRow.style.display = 'none';
+    }
+
     const tbody = document.getElementById('receipt-items');
     tbody.innerHTML = '';
-    
+
     data.items.forEach(item => {
         const unitPrice = item.unit_price || item.precio || (item.subtotal / item.quantity);
         const tr = document.createElement('tr');
@@ -544,21 +565,21 @@ async function viewReceipt(saleId) {
     try {
         const res = await fetch(`/api/receipt/${saleId}`);
         const data = await res.json();
-        
+
         if (data.success) {
             const r = data.receipt;
             const usdTotal = (r.total || 0) / exchangeRate;
-      showReceiptModal({
-            sale_id: r.sale_id,
-            timestamp: r.timestamp,
-            cashier: r.cashier,
-            subtotal: r.subtotal || r.total,
-            discount: r.discount || 0,
-            total: r.total,
-            total_usd: parseFloat(usdTotal.toFixed(2)),
-            exchange_rate: exchangeRate,
-            items: r.items
-        });
+            showReceiptModal({
+                sale_id: r.sale_id,
+                timestamp: r.timestamp,
+                cashier: r.cashier,
+                subtotal: r.subtotal || r.total,
+                discount: r.discount || 0,
+                total: r.total,
+                total_usd: parseFloat(usdTotal.toFixed(2)),
+                exchange_rate: exchangeRate,
+                items: r.items
+            });
         } else {
             showToast('No se pudo cargar el recibo', 'error');
         }
@@ -597,7 +618,7 @@ async function loadAdminData() {
                         No hay ventas registradas
                     </td>
                 </tr>`;
-            renderStoreSalesChart(data.store_sales || []);
+            renderSalesCharts(data.store_sales || [], data.cashier_sales || []);
             return;
         }
 
@@ -623,7 +644,7 @@ async function loadAdminData() {
             tbody.appendChild(tr);
         });
 
-        renderStoreSalesChart(data.store_sales || []);
+        renderSalesCharts(data.store_sales || [], data.cashier_sales || []);
     } catch (err) {
         showToast("Error al cargar datos de administración", 'error');
     }
@@ -674,77 +695,140 @@ function toggleCurrencyMode() {
     renderCart();
 }
 
-function renderStoreSalesChart(storeSales) {
-    const list = document.getElementById('store-sales-list');
-    const ctx = document.getElementById('store-sales-chart');
+function renderSalesCharts(storeSales, cashierSales) {
+    const storeList = document.getElementById('store-sales-list');
+    const storeCtx = document.getElementById('store-sales-chart');
+    const cashierList = document.getElementById('cashier-sales-list');
+    const cashierCtx = document.getElementById('cashier-sales-chart');
 
-    list.innerHTML = '';
+    storeList.innerHTML = '';
+    cashierList.innerHTML = '';
+
+    // Handle Store Sales
     if (!storeSales || storeSales.length === 0) {
-        list.innerHTML = '<p class="empty-state">No hay ventas por tienda</p>';
-        if (storeSalesChart) {
-            storeSalesChart.destroy();
-            storeSalesChart = null;
-        }
-        return;
-    }
+        storeList.innerHTML = '<p class="empty-state">No hay ventas por tienda</p>';
+        if (storeSalesChart) storeSalesChart.destroy();
+        storeSalesChart = null;
+    } else {
+        storeSales.forEach(store => {
+            const row = document.createElement('div');
+            row.className = 'store-sales-row';
+            row.innerHTML = `
+                <div class="store-sales-name">${escapeHtml(store.store || 'Sin tienda')}</div>
+                <div class="store-sales-value">$${formatNumber(store.total)}</div>
+                <div class="store-sales-meta">${store.sales_count} venta${store.sales_count === 1 ? '' : 's'}</div>
+            `;
+            storeList.appendChild(row);
+        });
 
-    storeSales.forEach(store => {
-        const row = document.createElement('div');
-        row.className = 'store-sales-row';
-        row.innerHTML = `
-            <div class="store-sales-name">${escapeHtml(store.store || 'Sin tienda')}</div>
-            <div class="store-sales-value">$${formatNumber(store.total)}</div>
-            <div class="store-sales-meta">${store.sales_count} venta${store.sales_count === 1 ? '' : 's'}</div>
-        `;
-        list.appendChild(row);
-    });
+        const storeLabels = storeSales.map(item => item.store || 'Sin tienda');
+        const storeTotals = storeSales.map(item => item.total);
 
-    const labels = storeSales.map(item => item.store || 'Sin tienda');
-    const totals = storeSales.map(item => item.total);
-    const backgroundColors = [
-        '#6366f1',
-        '#22c55e',
-        '#f59e0b',
-        '#06b6d4',
-        '#ec4899',
-        '#fb7185',
-        '#14b8a6'
-    ];
-
-    if (storeSalesChart) {
-        storeSalesChart.destroy();
-    }
-
-    storeSalesChart = new Chart(ctx, {
-        type: 'pie',
-        data: {
-            labels,
-            datasets: [{
-                data: totals,
-                backgroundColor: backgroundColors.slice(0, labels.length),
-                borderColor: 'rgba(255,255,255,0.9)',
-                borderWidth: 1
-            }]
-        },
-        options: {
-            responsive: true,
-            plugins: {
-                legend: {
-                    position: 'bottom',
-                    labels: { color: '#f1f5f9' }
+        if (storeSalesChart) storeSalesChart.destroy();
+        storeSalesChart = new Chart(storeCtx, {
+            type: 'bar',
+            data: {
+                labels: storeLabels,
+                datasets: [{
+                    label: 'Ventas ($)',
+                    data: storeTotals,
+                    backgroundColor: '#6366f1',
+                    borderRadius: 4
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    legend: { display: false }
                 },
-                tooltip: {
-                    callbacks: {
-                        label: (context) => {
-                            const value = context.raw || 0;
-                            const percentage = ((value / totals.reduce((sum, cur) => sum + cur, 0)) * 100).toFixed(1);
-                            return `${context.label}: $${formatNumber(value)} (${percentage}%)`;
-                        }
-                    }
+                scales: {
+                    y: { beginAtZero: true }
                 }
             }
-        }
-    });
+        });
+    }
+
+    // Handle Cashier Sales
+    if (!cashierSales || cashierSales.length === 0) {
+        cashierList.innerHTML = '<p class="empty-state">No hay ventas por cajero</p>';
+        if (cashierSalesChart) cashierSalesChart.destroy();
+        cashierSalesChart = null;
+    } else {
+        cashierSales.forEach(c => {
+            const row = document.createElement('div');
+            row.className = 'store-sales-row';
+            row.innerHTML = `
+                <div class="store-sales-name">${escapeHtml(c.cashier || 'Sin cajero')}</div>
+                <div class="store-sales-value">$${formatNumber(c.total)}</div>
+                <div class="store-sales-meta">${c.sales_count} venta${c.sales_count === 1 ? '' : 's'}</div>
+            `;
+            cashierList.appendChild(row);
+        });
+
+        const cashierLabels = cashierSales.map(item => item.cashier || 'Sin cajero');
+        const cashierTotals = cashierSales.map(item => item.total);
+
+        if (cashierSalesChart) cashierSalesChart.destroy();
+        cashierSalesChart = new Chart(cashierCtx, {
+            type: 'bar',
+            data: {
+                labels: cashierLabels,
+                datasets: [{
+                    label: 'Ventas ($)',
+                    data: cashierTotals,
+                    backgroundColor: '#22c55e',
+                    borderRadius: 4
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    legend: { display: false }
+                },
+                scales: {
+                    y: { beginAtZero: true }
+                }
+            }
+        });
+    }
+}
+
+// ============================================
+// Export to Excel
+// ============================================
+function exportToExcel() {
+    const btn = document.querySelector('button[onclick="exportToExcel()"]');
+    const originalHtml = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner"></span> Generando...';
+    btn.disabled = true;
+
+    fetch('/api/admin/export')
+        .then(response => {
+            if (!response.ok) throw new Error('Error en el servidor');
+            return response.blob();
+        })
+        .then(blob => {
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            a.href = url;
+            // Generate simple filename
+            const dateStr = new Date().toISOString().slice(0,10).replace(/-/g, "");
+            a.download = `Ventas_NXT_POS_${dateStr}.xlsx`;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+            showToast('Descarga iniciada', 'success');
+        })
+        .catch(err => {
+            console.error(err);
+            showToast('Error al exportar a Excel', 'error');
+        })
+        .finally(() => {
+            btn.innerHTML = originalHtml;
+            btn.disabled = false;
+        });
 }
 
 // ============================================
@@ -754,11 +838,11 @@ function switchAdminTab(tab) {
     // Update nav buttons
     document.querySelectorAll('.btn-nav').forEach(btn => btn.classList.remove('active'));
     document.getElementById(`nav-${tab}`).classList.add('active');
-    
+
     // Update tab content
     document.querySelectorAll('.admin-tab').forEach(t => t.classList.remove('active'));
     document.getElementById(`tab-${tab}`).classList.add('active');
-    
+
     // Load data
     if (tab === 'dashboard') {
         loadAdminData();
@@ -789,7 +873,7 @@ function adminNavigateFromPOS(tab) {
 // ============================================
 async function loadInventory(query = '') {
     const sort = document.getElementById('inventory-sort')?.value || 'descripcion';
-    
+
     try {
         const res = await fetch(`/api/admin/inventory?q=${encodeURIComponent(query)}&sort=${sort}&order=${inventorySortOrder}`);
         const data = await res.json();
@@ -802,10 +886,10 @@ async function loadInventory(query = '') {
 function renderInventory(products) {
     const tbody = document.getElementById('inventory-table-body');
     const countBadge = document.getElementById('inventory-count-badge');
-    
+
     if (countBadge) countBadge.textContent = `${products.length} productos`;
     tbody.innerHTML = '';
-    
+
     if (products.length === 0) {
         tbody.innerHTML = `
             <tr>
@@ -815,7 +899,7 @@ function renderInventory(products) {
             </tr>`;
         return;
     }
-    
+
     products.forEach(p => {
         const tr = document.createElement('tr');
         let stockBadge;
@@ -826,7 +910,7 @@ function renderInventory(products) {
         } else {
             stockBadge = '<span class="badge stock-ok"><i class="fa-solid fa-check"></i> OK</span>';
         }
-        
+
         tr.innerHTML = `
             <td><strong>${escapeHtml(p.codigo)}</strong></td>
             <td>${escapeHtml(p.descripcion)}</td>
@@ -880,6 +964,19 @@ function openEditModal(codigo, descripcion, precio, stock) {
     document.getElementById('edit-descripcion').value = descripcion;
     document.getElementById('edit-precio').value = precio;
     document.getElementById('edit-stock').value = stock;
+
+    if (currentUser && currentUser.role === 'almacen') {
+        document.getElementById('edit-descripcion').readOnly = true;
+        document.getElementById('edit-precio').readOnly = true;
+        document.getElementById('edit-descripcion').style.opacity = '0.6';
+        document.getElementById('edit-precio').style.opacity = '0.6';
+    } else {
+        document.getElementById('edit-descripcion').readOnly = false;
+        document.getElementById('edit-precio').readOnly = false;
+        document.getElementById('edit-descripcion').style.opacity = '1';
+        document.getElementById('edit-precio').style.opacity = '1';
+    }
+
     document.getElementById('edit-product-modal').classList.add('active');
 }
 
@@ -893,7 +990,7 @@ document.getElementById('edit-product-form').addEventListener('submit', async (e
     const descripcion = document.getElementById('edit-descripcion').value;
     const precio = parseFloat(document.getElementById('edit-precio').value);
     const stock = parseInt(document.getElementById('edit-stock').value);
-    
+
     try {
         const res = await fetch(`/api/products/${encodeURIComponent(codigo)}`, {
             method: 'PUT',
@@ -901,7 +998,7 @@ document.getElementById('edit-product-form').addEventListener('submit', async (e
             body: JSON.stringify({ descripcion, precio, stock })
         });
         const data = await res.json();
-        
+
         if (data.success) {
             showToast('Producto actualizado ✓', 'success');
             closeEditModal();
@@ -919,7 +1016,7 @@ async function syncData() {
     const btn = document.getElementById('btn-sync');
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span> Sincronizando...';
-    
+
     try {
         const res = await fetch('/api/sync', { method: 'POST' });
         const data = await res.json();
@@ -1038,7 +1135,7 @@ if (saleDiscountInput) {
 
     });
 
-}  
+}
 
 function roundMoney(value) {
     return Math.round((value || 0) * 100) / 100;

@@ -1,7 +1,11 @@
 import os
 import sqlite3
 import pandas as pd
-from flask import Flask, request, jsonify, render_template, send_from_directory
+import io
+import time
+import threading
+import requests
+from flask import Flask, request, jsonify, render_template, send_from_directory, send_file
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
 
@@ -126,6 +130,7 @@ def init_db():
     create_user_if_missing(c, 'caja', 'caja123', 'cashier', 'Tienda Principal')
     create_user_if_missing(c, 'caja1', 'caja1234', 'cashier', 'Tienda Principal')
     create_user_if_missing(c, 'caja2', 'caja12345', 'cashier', 'Tienda Principal')
+    create_user_if_missing(c, 'almacen', 'almacen123', 'almacen', 'Almacen Central')
         
     conn.commit()
     conn.close()
@@ -295,6 +300,10 @@ def register_sale():
     if discount > subtotal:
         return jsonify({"success": False, "message": "El descuento no puede ser mayor al subtotal"}), 400
 
+    is_degustacion = (discount == subtotal and subtotal > 0)
+    if is_degustacion:
+        user_id = None
+
     total = subtotal - discount
 
     if payment_method == 'efectivo':
@@ -461,6 +470,14 @@ def get_income():
         ORDER BY total DESC
     """).fetchall()
 
+    cashier_sales = conn.execute("""
+        SELECT COALESCE(u.username, 'Sin cajero') AS cashier, COUNT(*) AS sales_count, SUM(s.total) AS total
+        FROM sales s
+        LEFT JOIN users u ON s.user_id = u.id
+        GROUP BY u.username
+        ORDER BY total DESC
+    """).fetchall()
+
     sales_list = []
     for sale in sales:
         sale_dict = dict(sale)
@@ -479,7 +496,8 @@ def get_income():
         "all_time_total": all_time_total or 0,
         "all_time_total_usd": round((all_time_total or 0) / exchange_rate, 2),
         "sales": sales_list,
-        "store_sales": [dict(s) for s in store_sales]
+        "store_sales": [dict(s) for s in store_sales],
+        "cashier_sales": [dict(c) for c in cashier_sales]
     })
 
 @app.route('/api/exchange-rate', methods=['GET'])
@@ -530,16 +548,94 @@ def get_inventory():
     conn.close()
     return jsonify([dict(p) for p in products])
 
-# Sync Mock
+def do_sync_to_central():
+    if not CENTRAL_SERVER_URL:
+        return 0, "No central server configured."
+        
+    conn = get_db()
+    unsynced_sales = conn.execute("SELECT * FROM sales WHERE is_synced = 0").fetchall()
+    
+    if not unsynced_sales:
+        conn.close()
+        return 0, "Nada que sincronizar."
+        
+    payload = []
+    for sale in unsynced_sales:
+        sale_dict = dict(sale)
+        items = conn.execute("SELECT * FROM sale_items WHERE sale_id = ?", (sale['id'],)).fetchall()
+        sale_dict['items'] = [dict(i) for i in items]
+        
+        if sale_dict.get('store') == 'Sin tienda' or not sale_dict.get('store'):
+            sale_dict['store'] = STORE_NAME
+            
+        payload.append(sale_dict)
+        
+    conn.close()
+    
+    try:
+        url = f"{CENTRAL_SERVER_URL.rstrip('/')}/api/remote_sync"
+        response = requests.post(url, json={"sales": payload}, timeout=10)
+        
+        if response.status_code == 200 and response.json().get('success'):
+            conn = get_db()
+            placeholders = ",".join("?" for _ in unsynced_sales)
+            sale_ids = [s['id'] for s in unsynced_sales]
+            conn.execute(f"UPDATE sales SET is_synced = 1 WHERE id IN ({placeholders})", tuple(sale_ids))
+            conn.commit()
+            conn.close()
+            return len(unsynced_sales), f"Se sincronizaron {len(unsynced_sales)} ventas a la base de datos remota"
+        else:
+            return 0, f"Error del servidor central: {response.text}"
+    except Exception as e:
+        return 0, f"Error de conexión: {str(e)}"
+
+# Real Sync
 @app.route('/api/sync', methods=['POST'])
 def sync_data():
-    # Mocking sync to a general database
+    count, msg = do_sync_to_central()
+    success = count > 0 or "Nada que sincronizar" in msg
+    return jsonify({"success": success, "message": msg})
+
+@app.route('/api/remote_sync', methods=['POST'])
+def remote_sync():
+    data = request.json
+    sales = data.get('sales', [])
+    if not sales:
+        return jsonify({"success": True})
+        
     conn = get_db()
-    unsynced = conn.execute("SELECT COUNT(*) as c FROM sales WHERE is_synced = 0").fetchone()['c']
-    conn.execute("UPDATE sales SET is_synced = 1 WHERE is_synced = 0")
+    c = conn.cursor()
+    
+    for sale in sales:
+        user_id = sale.get('user_id')
+        
+        c.execute("""
+            INSERT INTO sales (
+                user_id, subtotal, discount, total, payment_method, 
+                cash_amount, card_amount, timestamp, is_synced, store
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+        """, (
+            user_id, sale.get('subtotal', 0), sale.get('discount', 0), sale.get('total', 0),
+            sale.get('payment_method', 'efectivo'), sale.get('cash_amount', 0), sale.get('card_amount', 0),
+            sale.get('timestamp'), sale.get('store', 'Desconocido')
+        ))
+        
+        new_sale_id = c.lastrowid
+        
+        items = sale.get('items', [])
+        for item in items:
+            c.execute(
+                "INSERT INTO sale_items (sale_id, product_codigo, quantity, subtotal) VALUES (?, ?, ?, ?)",
+                (new_sale_id, item.get('product_codigo'), item.get('quantity'), item.get('subtotal'))
+            )
+            c.execute(
+                "UPDATE products SET stock = stock - ? WHERE codigo = ?",
+                (item.get('quantity'), item.get('product_codigo'))
+            )
+            
     conn.commit()
     conn.close()
-    return jsonify({"success": True, "message": f"Se sincronizaron {unsynced} ventas a la base de datos remota"})
+    return jsonify({"success": True})
 
 # Reload Excel products into inventory
 @app.route('/api/admin/reload_products', methods=['POST'])
@@ -548,6 +644,70 @@ def reload_products():
         return jsonify({"success": False, "message": f"Archivo de Excel no encontrado: {EXCEL_FILE}"}), 404
     import_excel_data(force=True)
     return jsonify({"success": True, "message": "Inventario recargado desde el archivo Excel."})
+
+# Export sales to Excel
+@app.route('/api/admin/export', methods=['GET'])
+def export_excel():
+    conn = get_db()
+    
+    # Query sales
+    sales_df = pd.read_sql_query("""
+        SELECT s.id as ID, u.username as Cajero, s.store as Tienda, s.timestamp as Fecha, 
+               s.subtotal as Subtotal, s.discount as Descuento, s.total as Total, 
+               s.payment_method as Metodo_Pago, s.cash_amount as Efectivo, s.card_amount as Tarjeta
+        FROM sales s
+        LEFT JOIN users u ON s.user_id = u.id
+        ORDER BY s.timestamp DESC
+    """, conn)
+    
+    # Query items
+    items_df = pd.read_sql_query("""
+        SELECT si.sale_id as Venta_ID, p.codigo as Codigo, p.descripcion as Descripcion, 
+               si.quantity as Cantidad, (si.subtotal / si.quantity) as Precio_Unitario, si.subtotal as Subtotal_Item
+        FROM sale_items si
+        LEFT JOIN products p ON si.product_codigo = p.codigo
+    """, conn)
+    
+    conn.close()
+    
+    # Write to Excel in memory
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        sales_df.to_excel(writer, sheet_name='Ventas', index=False)
+        items_df.to_excel(writer, sheet_name='Articulos Vendidos', index=False)
+        
+        # Auto-adjust columns widths for 'Ventas'
+        worksheet = writer.sheets['Ventas']
+        for i, col in enumerate(sales_df.columns):
+            max_len = max([len(str(x)) for x in sales_df[col].values] + [len(col)]) + 2
+            # openpyxl uses 1-based indexing for columns (A=1)
+            column_letter = worksheet.cell(row=1, column=i+1).column_letter
+            worksheet.column_dimensions[column_letter].width = max_len
+            
+        # Auto-adjust columns widths for 'Articulos Vendidos'
+        worksheet_items = writer.sheets['Articulos Vendidos']
+        for i, col in enumerate(items_df.columns):
+            max_len = max([len(str(x)) for x in items_df[col].values] + [len(col)]) + 2
+            column_letter = worksheet_items.cell(row=1, column=i+1).column_letter
+            worksheet_items.column_dimensions[column_letter].width = max_len
+            
+    output.seek(0)
+    
+    filename = f"Ventas_NXT_POS_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return send_file(output, as_attachment=True, download_name=filename, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+def background_sync_task():
+    while True:
+        time.sleep(60)
+        try:
+            do_sync_to_central()
+        except Exception:
+            pass
+
+# Start background sync thread automatically
+sync_thread = threading.Thread(target=background_sync_task)
+sync_thread.daemon = True
+sync_thread.start()
 
 if __name__ == '__main__':
     init_db()
