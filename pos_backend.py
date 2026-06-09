@@ -272,13 +272,18 @@ def register_sale():
     user_id = data.get('user_id')
     items = data.get('items', [])
 
-    discount = float(data.get('discount', 0))
-    discount_currency = data.get('discount_currency', 'mxn').lower()
+    def safe_float(val, default=0.0):
+        if val is None or val == '':
+            return float(default)
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return float(default)
+
+    discount = safe_float(data.get('discount', 0))
     payment_method = data.get('payment_method', 'efectivo')
-    cash_amount = float(data.get('cash_amount', 0))
-    cash_currency = data.get('cash_currency', 'mxn').lower()
-    card_amount = float(data.get('card_amount', 0))
-    exchange_rate = float(data.get('exchange_rate', 17.5))
+    cash_amount = safe_float(data.get('cash_amount', 0))
+    card_amount = safe_float(data.get('card_amount', 0))
     
     if not items:
         return jsonify({"success": False, "message": "El carrito está vacío"}), 400
