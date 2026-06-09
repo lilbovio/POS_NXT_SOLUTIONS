@@ -1654,6 +1654,11 @@ input:focus ~ .input-glow {
 }
 
 @media print {
+    @page {
+        size: 80mm auto;
+        margin: 0;
+    }
+
     body {
         background: white !important;
         margin: 0 !important;

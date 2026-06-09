@@ -150,9 +150,15 @@
                     </div>
 
                     <div class="payment-section">
-                        <div class="input-group payment-input">
-                            <i class="fa-solid fa-money-bill-wave"></i>
-                            <input type="number" id="sale-discount" placeholder="Descuento en MXN" min="0" step="0.01">
+                        <div style="display: flex; gap: 10px; align-items: flex-end;">
+                            <div class="input-group payment-input" style="flex: 1;">
+                                <i class="fa-solid fa-money-bill-wave"></i>
+                                <input type="number" id="sale-discount" placeholder="Descuento" min="0" step="0.01">
+                            </div>
+                            <select id="discount-currency" class="select-modern" style="height: 36px; width: 75px; padding: 6px 8px; font-size: 13px;">
+                                <option value="mxn">MXN</option>
+                                <option value="usd">USD</option>
+                            </select>
                         </div>
 
                         <div class="payment-method-box">
@@ -167,10 +173,16 @@
 
                         <div id="mixed-payment-fields" class="mixed-payment-fields" style="display:none;">
 
-                            <div class="input-group payment-input">
-                                <i class="fa-solid fa-money-bill-wave"></i>
-                                <input type="number" id="cash-amount" placeholder="Pago en efectivo" min="0" step="0.01"
-                                    value="0">
+                            <div style="display: flex; gap: 10px; align-items: flex-end;">
+                                <div class="input-group payment-input" style="flex: 1;">
+                                    <i class="fa-solid fa-money-bill-wave"></i>
+                                    <input type="number" id="cash-amount" placeholder="Pago en efectivo" min="0" step="0.01"
+                                        value="0">
+                                </div>
+                                <select id="cash-currency" class="select-modern" style="height: 36px; width: 75px; padding: 6px 8px; font-size: 13px;">
+                                    <option value="mxn">MXN</option>
+                                    <option value="usd">USD</option>
+                                </select>
                             </div>
 
                             <div class="input-group payment-input">
@@ -179,16 +191,6 @@
                                     value="0">
                             </div>
 
-                        </div>
-                    </div>
-                    <div class="summary-details">
-                        <div class="summary-row">
-                            <span>Artículos:</span>
-                            <span id="cart-item-count">0</span>
-                        </div>
-                        <div class="summary-row total-row">
-                            <span>Total:</span>
-                            <span id="cart-total" class="total-amount">$0.00</span>
                         </div>
                     </div>
                     <div class="cart-actions">
@@ -558,11 +560,11 @@
         <div id="receipt-payment-details"></div>
 
         <h3 class="receipt-total">
-            Total: $<span id="receipt-total-amount"></span>
+            <span id="receipt-total-label">Total:</span> <span id="receipt-total-amount"></span>
         </h3>
 
         <p class="receipt-total">
-            Total USD: $<span id="receipt-total-usd"></span>
+            <span id="receipt-secondary-label">Total USD:</span> <span id="receipt-total-usd"></span>
         </p>
         <div class="receipt-line"></div>
         <p class="receipt-footer">¡Gracias por su compra!</p>

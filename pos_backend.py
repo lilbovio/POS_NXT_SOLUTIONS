@@ -123,6 +123,8 @@ def init_db():
     add_column_if_not_exists(conn, 'sales', 'payment_method', "TEXT DEFAULT 'efectivo'")
     add_column_if_not_exists(conn, 'sales', 'cash_amount', "REAL DEFAULT 0")
     add_column_if_not_exists(conn, 'sales', 'card_amount', "REAL DEFAULT 0")
+    add_column_if_not_exists(conn, 'sales', 'discount_currency', "TEXT DEFAULT 'mxn'")
+    add_column_if_not_exists(conn, 'sales', 'cash_currency', "TEXT DEFAULT 'mxn'")
     
     create_config_entry_if_missing(conn, 'exchange_rate', 17.5)
     
@@ -271,9 +273,12 @@ def register_sale():
     items = data.get('items', [])
 
     discount = float(data.get('discount', 0))
+    discount_currency = data.get('discount_currency', 'mxn').lower()
     payment_method = data.get('payment_method', 'efectivo')
     cash_amount = float(data.get('cash_amount', 0))
+    cash_currency = data.get('cash_currency', 'mxn').lower()
     card_amount = float(data.get('card_amount', 0))
+    exchange_rate = float(data.get('exchange_rate', 17.5))
     
     if not items:
         return jsonify({"success": False, "message": "El carrito está vacío"}), 400
@@ -318,7 +323,13 @@ def register_sale():
         if cash_amount < 0 or card_amount < 0:
             return jsonify({"success": False, "message": "Los montos no pueden ser negativos"}), 400
 
-        if round(cash_amount + card_amount, 2) != round(total, 2):
+        # Use tolerance for floating point comparison (1.00 tolerance to handle currency conversion rounding)
+        payment_sum = round(cash_amount + card_amount, 2)
+        total_rounded = round(total, 2)
+        tolerance = 1.00
+        
+        if abs(payment_sum - total_rounded) > tolerance:
+            print(f"DEBUG Backend: payment_sum={payment_sum}, total={total_rounded}, difference={abs(payment_sum - total_rounded)}")
             return jsonify({"success": False, "message": "La suma del pago mixto debe ser igual al total"}), 400
         
     conn = get_db()
@@ -336,22 +347,26 @@ def register_sale():
             user_id,
             subtotal,
             discount,
+            discount_currency,
             total,
             payment_method,
             cash_amount,
+            cash_currency,
             card_amount,
             timestamp,
             is_synced,
             store
         ) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
     """, (
         user_id,
         subtotal,
         discount,
+        discount_currency,
         total,
         payment_method,
         cash_amount,
+        cash_currency,
         card_amount,
         timestamp,
         store
@@ -383,9 +398,11 @@ def register_sale():
         "timestamp": timestamp,
         "subtotal": subtotal,
         "discount": discount,
+        "discount_currency": discount_currency,
         "total": total,
         "payment_method": payment_method,
         "cash_amount": cash_amount,
+        "cash_currency": cash_currency,
         "card_amount": card_amount,
         "store": store
     })
@@ -430,7 +447,14 @@ def get_receipt(sale_id):
         "receipt": {
             "sale_id": sale['id'],
             "cashier": sale['username'] or 'Desconocido',
+            "subtotal": sale['subtotal'],
+            "discount": sale['discount'],
+            "discount_currency": sale['discount_currency'] or 'mxn',
             "total": sale['total'],
+            "payment_method": sale['payment_method'],
+            "cash_amount": sale['cash_amount'],
+            "cash_currency": sale['cash_currency'] or 'mxn',
+            "card_amount": sale['card_amount'],
             "timestamp": sale['timestamp'],
             "is_synced": sale['is_synced'],
             "items": [dict(i) for i in items]

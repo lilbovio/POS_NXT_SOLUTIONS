@@ -239,6 +239,13 @@ function updateCartQuantity(codigo, qty) {
 function clearCart() {
     if (cart.length === 0) return;
     cart = [];
+    document.getElementById('sale-discount').value = 0;
+    document.getElementById('discount-currency').value = 'mxn';
+    document.getElementById('cash-amount').value = 0;
+    document.getElementById('cash-currency').value = 'mxn';
+    document.getElementById('card-amount').value = 0;
+    document.getElementById('payment-method').value = 'efectivo';
+    document.getElementById('mixed-payment-fields').style.display = 'none';
     renderCart();
     showToast('Carrito limpiado', 'info');
 }
@@ -285,11 +292,20 @@ function renderCart() {
         cartItemsEl.appendChild(div);
     });
 
-    const discount =
-        parseFloat(document.getElementById('sale-discount')?.value);
+    const discountValue =
+        parseFloat(document.getElementById('sale-discount')?.value) || 0;
+    
+    const discountCurrency = 
+        document.getElementById('discount-currency')?.value || 'mxn';
+    
+    // Convert discount to MXN if it's in USD
+    let discountInMxn = discountValue;
+    if (discountCurrency === 'usd') {
+        discountInMxn = discountValue * exchangeRate;
+    }
 
     const validDiscount =
-        Math.min(Math.max(discount), total);
+        Math.min(Math.max(discountInMxn), total);
 
     const finalTotal = total - validDiscount;
 
@@ -316,50 +332,116 @@ async function processSale() {
     }
     const subtotal = cart.reduce((sum, item) => sum + item.subtotal, 0);
 
-    const discount =
-        parseFloat(document.getElementById('sale-discount')?.value);
+    const discountValue =
+        parseFloat(document.getElementById('sale-discount')?.value) || 0;
+    
+    const discountCurrency = 
+        document.getElementById('discount-currency')?.value || 'mxn';
 
-    if (discount < 0) {
+    // Convert discount to MXN if it's in USD
+    let discountInMxn = discountValue;
+    if (discountCurrency === 'usd') {
+        discountInMxn = discountValue * exchangeRate;
+    }
+
+    if (discountInMxn < 0) {
         showToast("El descuento no puede ser negativo", 'error');
         return;
     }
 
-    if (discount > subtotal) {
+    if (discountInMxn > subtotal) {
         showToast("El descuento no puede ser mayor al total", 'error');
         return;
     }
 
-    if (discount == subtotal && subtotal > 0) {
+    if (discountInMxn == subtotal && subtotal > 0) {
         showToast("El descuento es del 100%, la botella se registrará para degustación", "info");
     }
 
-    const total = subtotal - discount;
+    const total = subtotal - discountInMxn;
 
     const paymentMethod =
         document.getElementById('payment-method')?.value || 'efectivo';
 
     let cashAmount =
-        parseFloat(document.getElementById('cash-amount')?.value);
+        parseFloat(document.getElementById('cash-amount')?.value) || 0;
+    
+    const cashCurrency = 
+        document.getElementById('cash-currency')?.value || 'mxn';
 
     let cardAmount =
-        parseFloat(document.getElementById('card-amount')?.value);
+        parseFloat(document.getElementById('card-amount')?.value) || 0;
+
+    // Convert cash amount to MXN if it's in USD
+    let cashAmountInMxn = cashAmount;
+    if (cashCurrency === 'usd') {
+        cashAmountInMxn = cashAmount * exchangeRate;
+    }
+
     if (paymentMethod === 'efectivo') {
-        cashAmount = total;
+        cashAmountInMxn = total;
         cardAmount = 0;
     }
 
     if (paymentMethod === 'tarjeta') {
-        cashAmount = 0;
+        cashAmountInMxn = 0;
         cardAmount = total;
     }
 
     if (paymentMethod === 'mixto') {
-        if (cashAmount < 0 || cardAmount < 0) {
+        if (cashAmountInMxn < 0 || cardAmount < 0) {
             showToast("Los montos de pago no pueden ser negativos", 'error');
             return;
         }
 
-        if (roundMoney(cashAmount + cardAmount) !== roundMoney(total)) {
+        // When in USD mode, validate USD amounts directly to avoid floating point errors
+        // When in MXN mode, validate MXN amounts after conversion
+        let isValidPayment = false;
+        
+        if (isUsdMode) {
+            // In USD mode, compare the USD amounts (no conversion)
+            let totalUsd = total / exchangeRate;
+            let cashUsd = cashAmount;
+            let cardUsd = cardAmount;
+            
+            console.log('DEBUG - Mixed Payment Validation (USD Mode):');
+            console.log('totalUsd:', totalUsd);
+            console.log('cashUsd:', cashUsd);
+            console.log('cardUsd:', cardUsd);
+            console.log('Sum:', cashUsd + cardUsd);
+            
+            // Use tolerance for floating point comparison
+            const sumUsd = roundMoney(cashUsd + cardUsd);
+            const totalUsdRounded = roundMoney(totalUsd);
+            const usdTolerance = 0.1;
+            const matchUsd = Math.abs(sumUsd - totalUsdRounded) <= usdTolerance;
+            
+            console.log('Match:', matchUsd);
+            
+            isValidPayment = matchUsd;
+        } else {
+            // In MXN mode, compare the MXN amounts
+            let cardAmountInMxn = cardAmount;
+            
+            console.log('DEBUG - Mixed Payment Validation (MXN Mode):');
+            console.log('total:', total);
+            console.log('cashAmountInMxn:', cashAmountInMxn);
+            console.log('cardAmountInMxn:', cardAmountInMxn);
+            console.log('Sum:', cashAmountInMxn + cardAmountInMxn);
+            
+            // Use tolerance for floating point comparison
+            const sumMxn = roundMoney(cashAmountInMxn + cardAmountInMxn);
+            const totalMxn = roundMoney(total);
+            const mxnTolerance = 1.00;
+            const matchMxn = Math.abs(sumMxn - totalMxn) <= mxnTolerance;
+            
+            console.log('Match:', matchMxn);
+            
+            isValidPayment = matchMxn;
+        }
+
+        if (!isValidPayment) {
+            console.error('Validation FAILED - Mixed payment sum does not equal total');
             showToast("La suma del pago mixto debe ser igual al total con descuento", 'error');
             return;
         }
@@ -368,6 +450,12 @@ async function processSale() {
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span> Procesando...';
 
+    // Ensure card amount is converted to MXN for backend
+    let finalCardAmount = cardAmount;
+    if (isUsdMode) {
+        finalCardAmount = cardAmount * exchangeRate;
+    }
+
     try {
         const res = await fetch('/api/sales', {
             method: 'POST',
@@ -375,10 +463,13 @@ async function processSale() {
             body: JSON.stringify({
                 user_id: currentUser.id,
                 items: cart,
-                discount: discount,
+                discount: discountInMxn,
+                discount_currency: discountCurrency,
                 payment_method: paymentMethod,
-                cash_amount: cashAmount,
-                card_amount: cardAmount
+                cash_amount: cashAmountInMxn,
+                cash_currency: cashCurrency,
+                card_amount: finalCardAmount,
+                exchange_rate: exchangeRate
             })
         });
         const data = await res.json();
@@ -397,12 +488,14 @@ async function processSale() {
                 items: [...cart],
 
                 subtotal: subtotal,
-                discount: discount,
+                discount: discountInMxn,
+                discount_currency: discountCurrency,
 
                 total: total,
 
                 payment_method: paymentMethod,
-                cash_amount: cashAmount,
+                cash_amount: cashAmountInMxn,
+                cash_currency: cashCurrency,
                 card_amount: cardAmount,
 
                 total_usd: parseFloat(totalUsd.toFixed(2)),
@@ -422,6 +515,10 @@ async function processSale() {
             cart = [];
             renderCart();
             document.getElementById('sale-discount').value = 0;
+            document.getElementById('discount-currency').value = 'mxn';
+            document.getElementById('cash-amount').value = 0;
+            document.getElementById('cash-currency').value = 'mxn';
+            document.getElementById('card-amount').value = 0;
             renderCart();
         } else {
             showToast("Error: " + data.message, 'error');
@@ -445,16 +542,32 @@ function showReceiptModal(data) {
     document.getElementById('modal-receipt-id').textContent = data.sale_id;
     document.getElementById('modal-receipt-date').textContent = formatDate(data.timestamp);
     document.getElementById('modal-receipt-cashier').textContent = data.cashier || 'N/A';
-    document.getElementById('modal-receipt-total').textContent = `$${formatNumber(data.total)}`;
     document.getElementById('modal-receipt-subtotal').textContent = `$${formatNumber(data.subtotal || data.total)}`;
-    document.getElementById('modal-receipt-discount').textContent = `-$${formatNumber(data.discount || 0)}`;
+    
+    // Show discount with currency
+    const discountCurrency = data.discount_currency ? data.discount_currency.toUpperCase() : 'MXN';
+    document.getElementById('modal-receipt-discount').textContent = `-$${formatNumber(data.discount || 0)} ${discountCurrency}`;
+
+    const isModalPaidInUsd = data.cash_currency === 'usd' || (data.payment_method === 'mixto' && data.cash_currency === 'usd');
+    const modalUsdTotal = data.total_usd || (data.total / rate || 0);
+
+    if (isModalPaidInUsd) {
+        document.getElementById('modal-receipt-total').textContent = `US$ ${formatNumber(modalUsdTotal)}`;
+        document.getElementById('modal-receipt-total-usd').textContent = `$${formatNumber(data.total)}`;
+    } else {
+        document.getElementById('modal-receipt-total').textContent = `$${formatNumber(data.total)}`;
+        document.getElementById('modal-receipt-total-usd').textContent = `US$ ${formatNumber(modalUsdTotal)}`;
+    }
+
     document.getElementById('modal-receipt-payment').textContent = data.payment_method || 'efectivo';
     const modalPaymentDetails = document.getElementById('modal-payment-details');
 
     if (data.payment_method === 'mixto') {
+        // Show cash currency
+        const cashCurrency = data.cash_currency ? data.cash_currency.toUpperCase() : 'MXN';
         modalPaymentDetails.innerHTML = `
         <div class="receipt-total-digital">
-            <span>EFECTIVO</span>
+            <span>EFECTIVO (${cashCurrency})</span>
             <span>$${formatNumber(data.cash_amount || 0)}</span>
         </div>
 
@@ -468,13 +581,12 @@ function showReceiptModal(data) {
     }
     document.getElementById('modal-exchange-rate').textContent = `1 USD = $${formatNumber(rate)} MXN`;
     const modalUsdRow = document.getElementById('modal-receipt-total-usd').parentElement;
+    modalUsdRow.style.display = 'flex';
 
-    if (isUsdMode) {
-        modalUsdRow.style.display = 'flex';
-        document.getElementById('modal-receipt-total-usd').textContent =
-            `US$ ${formatNumber(data.total_usd || (data.total / rate || 0))}`;
+    if (isModalPaidInUsd) {
+        document.getElementById('modal-receipt-total-usd').textContent = `$${formatNumber(data.total)}`;
     } else {
-        modalUsdRow.style.display = 'none';
+        document.getElementById('modal-receipt-total-usd').textContent = `US$ ${formatNumber(modalUsdTotal)}`;
     }
 
     const tbody = document.getElementById('modal-receipt-items');
@@ -510,15 +622,35 @@ function fillPrintReceipt(data) {
     document.getElementById('receipt-id').textContent = data.sale_id;
     document.getElementById('receipt-date').textContent = formatDate(data.timestamp);
     document.getElementById('receipt-cashier').textContent = data.cashier || currentUser?.username || 'N/A';
-    document.getElementById('receipt-total-amount').textContent = formatNumber(data.total);
     document.getElementById('receipt-subtotal').textContent = formatNumber(data.subtotal || data.total);
-    document.getElementById('receipt-discount').textContent = '-' + formatNumber(data.discount || 0);
+    
+    // Show discount with currency
+    const discountCurrency = data.discount_currency ? data.discount_currency.toUpperCase() : 'MXN';
+    document.getElementById('receipt-discount').textContent = '-' + formatNumber(data.discount || 0) + ' ' + discountCurrency;
+
+    const isReceiptPaidInUsd = data.cash_currency === 'usd' || (data.payment_method === 'mixto' && data.cash_currency === 'usd');
+    const usdTotalValue = data.total_usd || (data.total / rate || 0);
+
+    if (isReceiptPaidInUsd) {
+        document.getElementById('receipt-total-label').textContent = 'Total USD:';
+        document.getElementById('receipt-total-amount').textContent = `US$ ${formatNumber(usdTotalValue)}`;
+        document.getElementById('receipt-secondary-label').textContent = 'Total MXN:';
+        document.getElementById('receipt-total-usd').textContent = `$${formatNumber(data.total)}`;
+    } else {
+        document.getElementById('receipt-total-label').textContent = 'Total:';
+        document.getElementById('receipt-total-amount').textContent = `$${formatNumber(data.total)}`;
+        document.getElementById('receipt-secondary-label').textContent = 'Total USD:';
+        document.getElementById('receipt-total-usd').textContent = `US$ ${formatNumber(usdTotalValue)}`;
+    }
+    
     const paymentInfo = document.getElementById('receipt-payment-details');
 
     if (data.payment_method === 'mixto') {
+        // Show cash currency
+        const cashCurrency = data.cash_currency ? data.cash_currency.toUpperCase() : 'MXN';
         paymentInfo.innerHTML = `
         <p>Método: Mixto</p>
-        <p>Efectivo: $${formatNumber(data.cash_amount || 0)}</p>
+        <p>Efectivo (${cashCurrency}): $${formatNumber(data.cash_amount || 0)}</p>
         <p>Tarjeta: $${formatNumber(data.card_amount || 0)}</p>
     `;
     } else {
@@ -528,13 +660,12 @@ function fillPrintReceipt(data) {
     }
     document.getElementById('receipt-exchange-rate').textContent = `1 USD = $${formatNumber(rate)} MXN`;
     const printUsdRow = document.getElementById('receipt-total-usd').parentElement;
+    printUsdRow.style.display = 'block';
 
-    if (isUsdMode) {
-        printUsdRow.style.display = 'block';
-        document.getElementById('receipt-total-usd').textContent =
-            formatNumber(data.total_usd || (data.total / rate || 0));
+    if (isReceiptPaidInUsd) {
+        document.getElementById('receipt-total-usd').textContent = `$${formatNumber(data.total)}`;
     } else {
-        printUsdRow.style.display = 'none';
+        document.getElementById('receipt-total-usd').textContent = `US$ ${formatNumber(usdTotalValue)}`;
     }
 
     const tbody = document.getElementById('receipt-items');
@@ -575,7 +706,12 @@ async function viewReceipt(saleId) {
                 cashier: r.cashier,
                 subtotal: r.subtotal || r.total,
                 discount: r.discount || 0,
+                discount_currency: r.discount_currency || 'mxn',
                 total: r.total,
+                payment_method: r.payment_method,
+                cash_amount: r.cash_amount || 0,
+                cash_currency: r.cash_currency || 'mxn',
+                card_amount: r.card_amount || 0,
                 total_usd: parseFloat(usdTotal.toFixed(2)),
                 exchange_rate: exchangeRate,
                 items: r.items
@@ -1132,6 +1268,32 @@ if (saleDiscountInput) {
     saleDiscountInput.addEventListener('input', () => {
 
         renderCart();
+
+    });
+
+}
+
+const discountCurrencySelect =
+    document.getElementById('discount-currency');
+
+if (discountCurrencySelect) {
+
+    discountCurrencySelect.addEventListener('change', () => {
+
+        renderCart();
+
+    });
+
+}
+
+const cashCurrencySelect =
+    document.getElementById('cash-currency');
+
+if (cashCurrencySelect) {
+
+    cashCurrencySelect.addEventListener('change', () => {
+
+        // No need to re-render cart here, just for future reference
 
     });
 
