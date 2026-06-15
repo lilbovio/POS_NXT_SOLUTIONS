@@ -281,8 +281,10 @@ def register_sale():
             return float(default)
 
     discount = safe_float(data.get('discount', 0))
+    discount_currency = data.get('discount_currency', 'mxn')
     payment_method = data.get('payment_method', 'efectivo')
     cash_amount = safe_float(data.get('cash_amount', 0))
+    cash_currency = data.get('cash_currency', 'mxn')
     card_amount = safe_float(data.get('card_amount', 0))
     
     if not items:
@@ -677,53 +679,90 @@ def reload_products():
 # Export sales to Excel
 @app.route('/api/admin/export', methods=['GET'])
 def export_excel():
-    conn = get_db()
-    
-    # Query sales
-    sales_df = pd.read_sql_query("""
-        SELECT s.id as ID, u.username as Cajero, s.store as Tienda, s.timestamp as Fecha, 
-               s.subtotal as Subtotal, s.discount as Descuento, s.total as Total, 
-               s.payment_method as Metodo_Pago, s.cash_amount as Efectivo, s.card_amount as Tarjeta
-        FROM sales s
-        LEFT JOIN users u ON s.user_id = u.id
-        ORDER BY s.timestamp DESC
-    """, conn)
-    
-    # Query items
-    items_df = pd.read_sql_query("""
-        SELECT si.sale_id as Venta_ID, p.codigo as Codigo, p.descripcion as Descripcion, 
-               si.quantity as Cantidad, (si.subtotal / si.quantity) as Precio_Unitario, si.subtotal as Subtotal_Item
-        FROM sale_items si
-        LEFT JOIN products p ON si.product_codigo = p.codigo
-    """, conn)
-    
-    conn.close()
-    
-    # Write to Excel in memory
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        sales_df.to_excel(writer, sheet_name='Ventas', index=False)
-        items_df.to_excel(writer, sheet_name='Articulos Vendidos', index=False)
+    try:
+        conn = get_db()
         
-        # Auto-adjust columns widths for 'Ventas'
-        worksheet = writer.sheets['Ventas']
-        for i, col in enumerate(sales_df.columns):
-            max_len = max([len(str(x)) for x in sales_df[col].values] + [len(col)]) + 2
-            # openpyxl uses 1-based indexing for columns (A=1)
-            column_letter = worksheet.cell(row=1, column=i+1).column_letter
-            worksheet.column_dimensions[column_letter].width = max_len
+        # Query sales
+        sales_df = pd.read_sql_query("""
+            SELECT s.id as ID, u.username as Cajero, s.store as Tienda, s.timestamp as Fecha, 
+                   s.subtotal as Subtotal, s.discount as Descuento, s.total as Total, 
+                   s.payment_method as Metodo_Pago, s.cash_amount as Efectivo, s.card_amount as Tarjeta
+            FROM sales s
+            LEFT JOIN users u ON s.user_id = u.id
+            ORDER BY s.timestamp DESC
+        """, conn)
+        
+        # Query items - safe division handling
+        items_df = pd.read_sql_query("""
+            SELECT si.sale_id as Venta_ID, p.codigo as Codigo, p.descripcion as Descripcion, 
+                   si.quantity as Cantidad, si.subtotal as Subtotal_Item
+            FROM sale_items si
+            LEFT JOIN products p ON si.product_codigo = p.codigo
+        """, conn)
+        
+        # Calculate unit price safely
+        if not items_df.empty:
+            items_df['Precio_Unitario'] = items_df.apply(
+                lambda row: row['Subtotal_Item'] / row['Cantidad'] if row['Cantidad'] > 0 else 0,
+                axis=1
+            )
+            # Reorder columns to include Precio_Unitario
+            items_df = items_df[['Venta_ID', 'Codigo', 'Descripcion', 'Cantidad', 'Precio_Unitario', 'Subtotal_Item']]
+        
+        conn.close()
+        
+        # Write to Excel in memory
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            sales_df.to_excel(writer, sheet_name='Ventas', index=False)
+            items_df.to_excel(writer, sheet_name='Articulos Vendidos', index=False)
             
+            # Auto-adjust columns widths for 'Ventas'
+            worksheet = writer.sheets['Ventas']
+            for i, col in enumerate(sales_df.columns):
+                if len(sales_df) > 0:
+                    max_len = max([len(str(x)) for x in sales_df[col].values] + [len(col)]) + 2
+                else:
+                    max_len = len(col) + 2
+                # openpyxl uses 1-based indexing for columns (A=1)
+                column_letter = worksheet.cell(row=1, column=i+1).column_letter
+                worksheet.column_dimensions[column_letter].width = min(max_len, 50)
+                
         # Auto-adjust columns widths for 'Articulos Vendidos'
-        worksheet_items = writer.sheets['Articulos Vendidos']
-        for i, col in enumerate(items_df.columns):
-            max_len = max([len(str(x)) for x in items_df[col].values] + [len(col)]) + 2
-            column_letter = worksheet_items.cell(row=1, column=i+1).column_letter
-            worksheet_items.column_dimensions[column_letter].width = max_len
+            worksheet_items = writer.sheets['Articulos Vendidos']
+            for i, col in enumerate(items_df.columns):
+                if len(items_df) > 0:
+                    max_len = max([len(str(x)) for x in items_df[col].values] + [len(col)]) + 2
+                else:
+                    max_len = len(col) + 2
+                column_letter = worksheet_items.cell(row=1, column=i+1).column_letter
+                worksheet_items.column_dimensions[column_letter].width = min(max_len, 50)
+                
+        output.seek(0)
+        
+        import os
+        import subprocess
+        
+        filename = f"Ventas_NXT_POS_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        export_dir = os.path.join(os.getcwd(), 'Exportaciones')
+        os.makedirs(export_dir, exist_ok=True)
+        export_path = os.path.join(export_dir, filename)
+        
+        # Save to disk
+        with open(export_path, 'wb') as f:
+            f.write(output.read())
             
-    output.seek(0)
-    
-    filename = f"Ventas_NXT_POS_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    return send_file(output, as_attachment=True, download_name=filename, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        # Try to open the folder and select the file
+        try:
+            if os.name == 'nt':
+                subprocess.run(['explorer', '/select,', os.path.normpath(export_path)])
+        except Exception as e:
+            print(f"Error opening explorer: {e}")
+            
+        return jsonify({"success": True, "message": f"Guardado en Exportaciones: {filename}"})
+    except Exception as e:
+        print(f"Error exporting Excel: {e}")
+        return jsonify({"success": False, "message": f"Error al exportar: {str(e)}"}), 500
 
 def background_sync_task():
     while True:

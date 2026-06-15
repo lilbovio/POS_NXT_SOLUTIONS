@@ -939,27 +939,17 @@ function exportToExcel() {
     btn.disabled = true;
 
     fetch('/api/admin/export')
-        .then(response => {
-            if (!response.ok) throw new Error('Error en el servidor');
-            return response.blob();
-        })
-        .then(blob => {
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.style.display = 'none';
-            a.href = url;
-            // Generate simple filename
-            const dateStr = new Date().toISOString().slice(0,10).replace(/-/g, "");
-            a.download = `Ventas_NXT_POS_${dateStr}.xlsx`;
-            document.body.appendChild(a);
-            a.click();
-            window.URL.revokeObjectURL(url);
-            document.body.removeChild(a);
-            showToast('Descarga iniciada', 'success');
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showToast(data.message, 'success');
+            } else {
+                showToast(`Error al exportar: ${data.message}`, 'error');
+            }
         })
         .catch(err => {
-            console.error(err);
-            showToast('Error al exportar a Excel', 'error');
+            console.error('Export error:', err);
+            showToast('Error al exportar, revisa la conexión', 'error');
         })
         .finally(() => {
             btn.innerHTML = originalHtml;
