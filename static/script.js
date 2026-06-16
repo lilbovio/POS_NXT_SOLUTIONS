@@ -246,6 +246,8 @@ function clearCart() {
     document.getElementById('card-amount').value = 0;
     document.getElementById('payment-method').value = 'efectivo';
     document.getElementById('mixed-payment-fields').style.display = 'none';
+    const vendorSelect = document.getElementById('vendor-select');
+    if (vendorSelect) vendorSelect.value = '';
     renderCart();
     showToast('Carrito limpiado', 'info');
 }
@@ -328,6 +330,19 @@ function renderCart() {
 async function processSale() {
     if (cart.length === 0) {
         showToast("El carrito está vacío", 'error');
+        return;
+    }
+    const vendorSelect = document.getElementById('vendor-select');
+    const selectedVendor = vendorSelect ? vendorSelect.value : '';
+    if (!selectedVendor) {
+        showToast("Debe seleccionar un vendedor antes de completar la venta", 'error');
+        if (vendorSelect) {
+            vendorSelect.focus();
+            vendorSelect.style.borderColor = 'var(--danger)';
+            setTimeout(() => {
+                vendorSelect.style.borderColor = '';
+            }, 3000);
+        }
         return;
     }
     const subtotal = cart.reduce((sum, item) => sum + item.subtotal, 0);
@@ -469,7 +484,8 @@ async function processSale() {
                 cash_amount: cashAmountInMxn,
                 cash_currency: cashCurrency,
                 card_amount: finalCardAmount,
-                exchange_rate: exchangeRate
+                exchange_rate: exchangeRate,
+                vendor: selectedVendor
             })
         });
         const data = await res.json();
@@ -483,7 +499,7 @@ async function processSale() {
             const receiptData = {
                 sale_id: data.sale_id,
                 timestamp: data.timestamp,
-                cashier: currentUser.username,
+                cashier: data.vendor || selectedVendor,
 
                 items: [...cart],
 
@@ -519,6 +535,7 @@ async function processSale() {
             document.getElementById('cash-amount').value = 0;
             document.getElementById('cash-currency').value = 'mxn';
             document.getElementById('card-amount').value = 0;
+            if (vendorSelect) vendorSelect.value = '';
             renderCart();
         } else {
             showToast("Error: " + data.message, 'error');

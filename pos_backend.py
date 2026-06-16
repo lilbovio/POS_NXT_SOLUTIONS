@@ -125,6 +125,7 @@ def init_db():
     add_column_if_not_exists(conn, 'sales', 'card_amount', "REAL DEFAULT 0")
     add_column_if_not_exists(conn, 'sales', 'discount_currency', "TEXT DEFAULT 'mxn'")
     add_column_if_not_exists(conn, 'sales', 'cash_currency', "TEXT DEFAULT 'mxn'")
+    add_column_if_not_exists(conn, 'sales', 'vendor', "TEXT")
     
     create_config_entry_if_missing(conn, 'exchange_rate', 17.5)
     
@@ -286,6 +287,7 @@ def register_sale():
     cash_amount = safe_float(data.get('cash_amount', 0))
     cash_currency = data.get('cash_currency', 'mxn')
     card_amount = safe_float(data.get('card_amount', 0))
+    vendor = data.get('vendor')
     
     if not items:
         return jsonify({"success": False, "message": "El carrito está vacío"}), 400
@@ -362,9 +364,10 @@ def register_sale():
             card_amount,
             timestamp,
             is_synced,
-            store
+            store,
+            vendor
         ) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
     """, (
         user_id,
         subtotal,
@@ -376,7 +379,8 @@ def register_sale():
         cash_currency,
         card_amount,
         timestamp,
-        store
+        store,
+        vendor
     ))
 
     sale_id = c.lastrowid
@@ -411,7 +415,8 @@ def register_sale():
         "cash_amount": cash_amount,
         "cash_currency": cash_currency,
         "card_amount": card_amount,
-        "store": store
+        "store": store,
+        "vendor": vendor
     })
 # Get sale details (items) for a specific sale
 @app.route('/api/sales/<int:sale_id>/items', methods=['GET'])
@@ -453,7 +458,8 @@ def get_receipt(sale_id):
         "success": True,
         "receipt": {
             "sale_id": sale['id'],
-            "cashier": sale['username'] or 'Desconocido',
+            "cashier": sale['vendor'] or sale['username'] or 'Desconocido',
+            "vendor": sale['vendor'],
             "subtotal": sale['subtotal'],
             "discount": sale['discount'],
             "discount_currency": sale['discount_currency'] or 'mxn',
@@ -684,7 +690,7 @@ def export_excel():
         
         # Query sales
         sales_df = pd.read_sql_query("""
-            SELECT s.id as ID, u.username as Cajero, s.store as Tienda, s.timestamp as Fecha, 
+            SELECT s.id as ID, u.username as Cajero, s.vendor as Vendedor, s.store as Tienda, s.timestamp as Fecha, 
                    s.subtotal as Subtotal, s.discount as Descuento, s.total as Total, 
                    s.payment_method as Metodo_Pago, s.cash_amount as Efectivo, s.card_amount as Tarjeta
             FROM sales s
