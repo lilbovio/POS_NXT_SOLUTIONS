@@ -343,6 +343,19 @@ def register_sale():
         
     conn = get_db()
     c = conn.cursor()
+
+    # Stock check — reject before writing anything
+    for item in items:
+        codigo = item.get('codigo', '')
+        quantity = int(item.get('quantity', 0))
+        row = c.execute("SELECT stock, descripcion FROM products WHERE codigo = ?", (codigo,)).fetchone()
+        if row and row['stock'] < quantity:
+            conn.close()
+            return jsonify({
+                "success": False,
+                "message": f"Stock insuficiente para: {row['descripcion']} (disponible: {row['stock']})"
+            }), 400
+
     timestamp = datetime.now().isoformat()
 
     store = 'Sin tienda'

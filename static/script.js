@@ -32,7 +32,7 @@ function showView(viewId) {
         v.style.display = 'none';
     });
     const target = document.getElementById(viewId);
-    target.style.display = 'block';
+    target.style.display = viewId === 'view-login' ? 'flex' : 'block';
     // Small delay for CSS transition
     requestAnimationFrame(() => {
         target.classList.add('active');
@@ -42,7 +42,7 @@ function showView(viewId) {
 // ============================================
 // Toast Notifications (Enhanced)
 // ============================================
-function showToast(message, type = 'info') {
+function showToast(message, type = 'info', duration) {
     const toast = document.createElement('div');
     const icons = {
         success: 'fa-circle-check',
@@ -53,10 +53,11 @@ function showToast(message, type = 'info') {
     toast.innerHTML = `<i class="fa-solid ${icons[type] || icons.info}"></i> ${message}`;
     toastContainer.appendChild(toast);
 
+    const ms = duration ?? (type === 'error' ? 5000 : 3000);
     setTimeout(() => {
         toast.classList.add('removing');
         setTimeout(() => toast.remove(), 300);
-    }, 3000);
+    }, ms);
 }
 
 // ============================================
@@ -103,7 +104,10 @@ loginForm.addEventListener('submit', async (e) => {
                 document.getElementById('pos-user-label').textContent = currentUser.username;
                 document.getElementById('pos-admin-nav').style.display = 'none';
                 showView('view-pos');
+                loadExchangeRate();
+                products = [];
                 loadProducts();
+                setTimeout(() => productSearch.focus(), 100);
             }
         } else {
             errorMsg.textContent = data.message;
@@ -133,8 +137,12 @@ function logout() {
 // POS - Products
 // ============================================
 async function loadProducts(query = '') {
+    // When the search bar is cleared, show existing products without re-fetching
+    if (query === '' && products.length > 0) {
+        renderProducts();
+        return;
+    }
     try {
-        await loadExchangeRate();
         const res = await fetch(`/api/products?q=${encodeURIComponent(query)}`);
         products = await res.json();
         renderProducts();
@@ -190,14 +198,18 @@ function renderProducts() {
     }
 
     products.forEach(p => {
+        const outOfStock = p.stock <= 0;
         const card = document.createElement('div');
-        card.className = 'product-card';
+        card.className = 'product-card' + (outOfStock ? ' product-card--out' : '');
         card.innerHTML = `
             <div class="product-code">${escapeHtml(p.codigo)}</div>
             <div class="product-name">${escapeHtml(p.descripcion)}</div>
             <div class="product-price">${getDisplayedPrice(p.precio)}</div>
+            ${outOfStock ? '<div class="product-out-badge">Agotado</div>' : ''}
         `;
-        card.onclick = () => addToCart(p);
+        if (!outOfStock) {
+            card.onclick = () => addToCart(p);
+        }
         productGrid.appendChild(card);
     });
 }
@@ -210,13 +222,17 @@ function addToCart(product) {
     if (existing) {
         existing.quantity += 1;
         existing.subtotal = existing.quantity * existing.precio;
+        if (product.stock > 0 && existing.quantity > product.stock) {
+            showToast(`Stock disponible: ${product.stock} unidad${product.stock === 1 ? '' : 'es'}`, 'info');
+        }
     } else {
         cart.push({
             codigo: product.codigo,
             descripcion: product.descripcion,
             precio: product.precio,
             quantity: 1,
-            subtotal: product.precio
+            subtotal: product.precio,
+            stock: product.stock
         });
     }
     renderCart();
@@ -224,6 +240,7 @@ function addToCart(product) {
 }
 
 function updateCartQuantity(codigo, qty) {
+    qty = parseInt(qty) || 0;
     const item = cart.find(i => i.codigo === codigo);
     if (item) {
         if (qty <= 0) {
@@ -231,6 +248,9 @@ function updateCartQuantity(codigo, qty) {
         } else {
             item.quantity = qty;
             item.subtotal = item.quantity * item.precio;
+            if (item.stock > 0 && qty > item.stock) {
+                showToast(`Stock disponible: ${item.stock} unidad${item.stock === 1 ? '' : 'es'}`, 'info');
+            }
         }
         renderCart();
     }
@@ -286,7 +306,7 @@ function renderCart() {
             </div>
             <div class="cart-controls">
                 <button class="btn btn-icon" onclick="updateCartQuantity('${escapeAttr(item.codigo)}', ${item.quantity - 1})"><i class="fa-solid fa-minus"></i></button>
-                <input type="number" value="${item.quantity}" readonly>
+                <input type="number" value="${item.quantity}" min="1" class="cart-qty-input" onchange="updateCartQuantity('${escapeAttr(item.codigo)}', parseInt(this.value) || 0)">
                 <button class="btn btn-icon" onclick="updateCartQuantity('${escapeAttr(item.codigo)}', ${item.quantity + 1})"><i class="fa-solid fa-plus"></i></button>
                 <button class="btn btn-icon" onclick="updateCartQuantity('${escapeAttr(item.codigo)}', 0)" style="color:var(--danger);"><i class="fa-solid fa-trash"></i></button>
             </div>
@@ -307,7 +327,7 @@ function renderCart() {
     }
 
     const validDiscount =
-        Math.min(Math.max(discountInMxn), total);
+        Math.min(Math.max(0, discountInMxn), total);
 
     const finalTotal = total - validDiscount;
 
@@ -322,12 +342,23 @@ function renderCart() {
 
     document.getElementById('cart-item-count').textContent =
         itemCount;
+
+    updateMixedRemaining();
 }
 
 // ============================================
 // POS - Sale Processing
 // ============================================
-async function processSale() {
+
+// Holds validated sale params between processSale() and doSale()
+let _pendingSale = null;
+
+function closeConfirmModal() {
+    document.getElementById('confirm-sale-modal').classList.remove('active');
+    _pendingSale = null;
+}
+
+function processSale() {
     if (cart.length === 0) {
         showToast("El carrito está vacío", 'error');
         return;
@@ -337,11 +368,12 @@ async function processSale() {
     if (!selectedVendor) {
         showToast("Debe seleccionar un vendedor antes de completar la venta", 'error');
         if (vendorSelect) {
+            vendorSelect.scrollIntoView({ behavior: 'smooth', block: 'center' });
             vendorSelect.focus();
             vendorSelect.style.borderColor = 'var(--danger)';
             setTimeout(() => {
                 vendorSelect.style.borderColor = '';
-            }, 3000);
+            }, 5000);
         }
         return;
     }
@@ -350,7 +382,7 @@ async function processSale() {
     const discountValue =
         parseFloat(document.getElementById('sale-discount')?.value) || 0;
     
-    const discountCurrency = 
+    const discountCurrency =
         document.getElementById('discount-currency')?.value || 'mxn';
 
     // Convert discount to MXN if it's in USD
@@ -369,10 +401,6 @@ async function processSale() {
         return;
     }
 
-    if (discountInMxn == subtotal && subtotal > 0) {
-        showToast("El descuento es del 100%, la botella se registrará para degustación", "info");
-    }
-
     const total = subtotal - discountInMxn;
 
     const paymentMethod =
@@ -381,7 +409,7 @@ async function processSale() {
     let cashAmount =
         parseFloat(document.getElementById('cash-amount')?.value) || 0;
     
-    const cashCurrency = 
+    const cashCurrency =
         document.getElementById('cash-currency')?.value || 'mxn';
 
     let cardAmount =
@@ -409,66 +437,77 @@ async function processSale() {
             return;
         }
 
-        // When in USD mode, validate USD amounts directly to avoid floating point errors
-        // When in MXN mode, validate MXN amounts after conversion
         let isValidPayment = false;
         
         if (isUsdMode) {
-            // In USD mode, compare the USD amounts (no conversion)
-            let totalUsd = total / exchangeRate;
-            let cashUsd = cashAmount;
-            let cardUsd = cardAmount;
-            
-            console.log('DEBUG - Mixed Payment Validation (USD Mode):');
-            console.log('totalUsd:', totalUsd);
-            console.log('cashUsd:', cashUsd);
-            console.log('cardUsd:', cardUsd);
-            console.log('Sum:', cashUsd + cardUsd);
-            
-            // Use tolerance for floating point comparison
-            const sumUsd = roundMoney(cashUsd + cardUsd);
-            const totalUsdRounded = roundMoney(totalUsd);
-            const usdTolerance = 0.1;
-            const matchUsd = Math.abs(sumUsd - totalUsdRounded) <= usdTolerance;
-            
-            console.log('Match:', matchUsd);
-            
-            isValidPayment = matchUsd;
+            const sumUsd = roundMoney(cashAmount + cardAmount);
+            const totalUsdRounded = roundMoney(total / exchangeRate);
+            isValidPayment = Math.abs(sumUsd - totalUsdRounded) <= 0.1;
         } else {
-            // In MXN mode, compare the MXN amounts
-            let cardAmountInMxn = cardAmount;
-            
-            console.log('DEBUG - Mixed Payment Validation (MXN Mode):');
-            console.log('total:', total);
-            console.log('cashAmountInMxn:', cashAmountInMxn);
-            console.log('cardAmountInMxn:', cardAmountInMxn);
-            console.log('Sum:', cashAmountInMxn + cardAmountInMxn);
-            
-            // Use tolerance for floating point comparison
-            const sumMxn = roundMoney(cashAmountInMxn + cardAmountInMxn);
+            const sumMxn = roundMoney(cashAmountInMxn + cardAmount);
             const totalMxn = roundMoney(total);
-            const mxnTolerance = 1.00;
-            const matchMxn = Math.abs(sumMxn - totalMxn) <= mxnTolerance;
-            
-            console.log('Match:', matchMxn);
-            
-            isValidPayment = matchMxn;
+            isValidPayment = Math.abs(sumMxn - totalMxn) <= 1.00;
         }
 
         if (!isValidPayment) {
-            console.error('Validation FAILED - Mixed payment sum does not equal total');
             showToast("La suma del pago mixto debe ser igual al total con descuento", 'error');
             return;
         }
     }
-    const btn = document.getElementById('btn-checkout');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> Procesando...';
 
     // Ensure card amount is converted to MXN for backend
     let finalCardAmount = cardAmount;
     if (isUsdMode) {
         finalCardAmount = cardAmount * exchangeRate;
+    }
+
+    // All validation passed — store params and show confirmation modal
+    _pendingSale = {
+        selectedVendor,
+        subtotal,
+        discountInMxn,
+        discountCurrency,
+        total,
+        paymentMethod,
+        cashAmountInMxn,
+        cashCurrency,
+        cardAmount,
+        finalCardAmount,
+        cartSnapshot: [...cart]
+    };
+
+    const paymentLabels = { efectivo: 'Efectivo', tarjeta: 'Tarjeta', mixto: 'Mixto' };
+    const itemCount = cart.reduce((s, i) => s + i.quantity, 0);
+    document.getElementById('confirm-items').textContent = `${itemCount} artículo${itemCount === 1 ? '' : 's'}`;
+    document.getElementById('confirm-subtotal').textContent = getDisplayedPrice(subtotal);
+    document.getElementById('confirm-discount').textContent = discountInMxn > 0
+        ? `-${getDisplayedPrice(discountInMxn)}`
+        : '$0.00';
+    document.getElementById('confirm-total').textContent = getDisplayedPrice(total);
+    document.getElementById('confirm-payment').textContent = paymentLabels[paymentMethod] || paymentMethod;
+    document.getElementById('confirm-vendor').textContent = selectedVendor;
+
+    document.getElementById('confirm-sale-modal').classList.add('active');
+}
+
+async function doSale() {
+    if (!_pendingSale) return;
+
+    const {
+        selectedVendor, subtotal, discountInMxn, discountCurrency,
+        total, paymentMethod, cashAmountInMxn, cashCurrency,
+        cardAmount, finalCardAmount, cartSnapshot
+    } = _pendingSale;
+
+    closeConfirmModal();
+
+    const vendorSelect = document.getElementById('vendor-select');
+    const btn = document.getElementById('btn-checkout');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Procesando...';
+
+    if (discountInMxn === subtotal && subtotal > 0) {
+        showToast("El descuento es del 100%, la botella se registrará para degustación", "info");
     }
 
     try {
@@ -477,7 +516,7 @@ async function processSale() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 user_id: currentUser.id,
-                items: cart,
+                items: cartSnapshot,
                 discount: discountInMxn,
                 discount_currency: discountCurrency,
                 payment_method: paymentMethod,
@@ -500,20 +539,15 @@ async function processSale() {
                 sale_id: data.sale_id,
                 timestamp: data.timestamp,
                 cashier: data.vendor || selectedVendor,
-
-                items: [...cart],
-
+                items: cartSnapshot,
                 subtotal: subtotal,
                 discount: discountInMxn,
                 discount_currency: discountCurrency,
-
                 total: total,
-
                 payment_method: paymentMethod,
                 cash_amount: cashAmountInMxn,
                 cash_currency: cashCurrency,
                 card_amount: cardAmount,
-
                 total_usd: parseFloat(totalUsd.toFixed(2)),
                 exchange_rate: exchangeRate
             };
@@ -535,6 +569,9 @@ async function processSale() {
             document.getElementById('cash-amount').value = 0;
             document.getElementById('cash-currency').value = 'mxn';
             document.getElementById('card-amount').value = 0;
+            document.getElementById('payment-method').value = 'efectivo';
+            document.getElementById('mixed-payment-fields').style.display = 'none';
+            document.getElementById('mixed-remaining').style.display = 'none';
             if (vendorSelect) vendorSelect.value = '';
             renderCart();
         } else {
@@ -998,7 +1035,10 @@ function adminGoToPOS() {
     document.getElementById('pos-user-label').textContent = currentUser.username;
     document.getElementById('pos-admin-nav').style.display = 'flex';
     showView('view-pos');
+    loadExchangeRate();
+    products = [];
     loadProducts();
+    setTimeout(() => productSearch.focus(), 100);
 }
 
 function showAdminView() {
@@ -1254,10 +1294,12 @@ if (paymentMethodSelect) {
         if (paymentMethodSelect.value === 'mixto') {
 
             mixedFields.style.display = 'block';
+            updateMixedRemaining();
 
         } else {
 
             mixedFields.style.display = 'none';
+            document.getElementById('mixed-remaining').style.display = 'none';
 
             document.getElementById('cash-amount').value = 0;
             document.getElementById('card-amount').value = 0;
@@ -1300,11 +1342,60 @@ if (cashCurrencySelect) {
 
     cashCurrencySelect.addEventListener('change', () => {
 
-        // No need to re-render cart here, just for future reference
+        updateMixedRemaining();
 
     });
 
 }
+
+// ============================================
+// Mixed Payment — live remaining indicator
+// ============================================
+function updateMixedRemaining() {
+    const el = document.getElementById('mixed-remaining');
+    if (!el) return;
+
+    const paymentMethod = document.getElementById('payment-method')?.value;
+    if (paymentMethod !== 'mixto') {
+        el.style.display = 'none';
+        return;
+    }
+
+    // Calculate current cart total (after discount)
+    const subtotal = cart.reduce((sum, item) => sum + item.subtotal, 0);
+    const discountValue = parseFloat(document.getElementById('sale-discount')?.value) || 0;
+    const discountCurrency = document.getElementById('discount-currency')?.value || 'mxn';
+    let discountInMxn = discountCurrency === 'usd' ? discountValue * exchangeRate : discountValue;
+    const validDiscount = Math.min(Math.max(0, discountInMxn), subtotal);
+    const total = subtotal - validDiscount;
+
+    // Read payment amounts
+    const cashCurrency = document.getElementById('cash-currency')?.value || 'mxn';
+    let cashAmount = parseFloat(document.getElementById('cash-amount')?.value) || 0;
+    let cashInMxn = cashCurrency === 'usd' ? cashAmount * exchangeRate : cashAmount;
+    const cardAmount = parseFloat(document.getElementById('card-amount')?.value) || 0;
+
+    const paid = roundMoney(cashInMxn + cardAmount);
+    const remaining = roundMoney(total - paid);
+
+    el.style.display = 'block';
+    if (Math.abs(remaining) < 0.01) {
+        el.className = 'mixed-remaining mixed-remaining--ok';
+        el.innerHTML = '<i class="fa-solid fa-circle-check"></i> Pago completo';
+    } else if (remaining > 0) {
+        el.className = 'mixed-remaining mixed-remaining--pending';
+        el.innerHTML = `<i class="fa-solid fa-triangle-exclamation"></i> Pendiente: ${getDisplayedPrice(remaining)}`;
+    } else {
+        el.className = 'mixed-remaining mixed-remaining--over';
+        el.innerHTML = `<i class="fa-solid fa-circle-xmark"></i> Excede por: ${getDisplayedPrice(Math.abs(remaining))}`;
+    }
+}
+
+// Wire mixed-remaining to cash/card inputs
+const cashAmountInput = document.getElementById('cash-amount');
+const cardAmountInput = document.getElementById('card-amount');
+if (cashAmountInput) cashAmountInput.addEventListener('input', updateMixedRemaining);
+if (cardAmountInput) cardAmountInput.addEventListener('input', updateMixedRemaining);
 
 function roundMoney(value) {
     return Math.round((value || 0) * 100) / 100;

@@ -223,6 +223,8 @@
                                     value="0">
                             </div>
 
+                            <div id="mixed-remaining" class="mixed-remaining" style="display:none;"></div>
+
                         </div>
                     </div>
                     <div class="cart-actions">
@@ -437,6 +439,50 @@
                         </table>
                     </div>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- CONFIRM SALE MODAL -->
+    <div class="modal-overlay" id="confirm-sale-modal">
+        <div class="modal glass-card confirm-modal-card">
+            <button class="modal-close" onclick="closeConfirmModal()">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+            <h2><i class="fa-solid fa-circle-check"></i> Confirmar Venta</h2>
+            <div class="confirm-summary">
+                <div class="confirm-row">
+                    <span>Artículos</span>
+                    <strong id="confirm-items"></strong>
+                </div>
+                <div class="confirm-row">
+                    <span>Subtotal</span>
+                    <strong id="confirm-subtotal"></strong>
+                </div>
+                <div class="confirm-row">
+                    <span>Descuento</span>
+                    <strong id="confirm-discount"></strong>
+                </div>
+                <div class="confirm-row confirm-row--total">
+                    <span>Total</span>
+                    <strong id="confirm-total"></strong>
+                </div>
+                <div class="confirm-row">
+                    <span>Método de pago</span>
+                    <strong id="confirm-payment"></strong>
+                </div>
+                <div class="confirm-row">
+                    <span>Vendedor</span>
+                    <strong id="confirm-vendor"></strong>
+                </div>
+            </div>
+            <div class="confirm-actions">
+                <button class="btn btn-success btn-large btn-glow" id="btn-confirm-sale" onclick="doSale()">
+                    <i class="fa-solid fa-check-circle"></i> Confirmar venta
+                </button>
+                <button class="btn btn-outline-danger btn-large" onclick="closeConfirmModal()">
+                    <i class="fa-solid fa-xmark"></i> Cancelar
+                </button>
             </div>
         </div>
     </div>
