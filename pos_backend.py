@@ -1,4 +1,5 @@
 import os
+import sys
 import sqlite3
 import pandas as pd
 import io
@@ -12,6 +13,17 @@ from datetime import datetime
 app = Flask(__name__)
 DB_FILE = "pos_database.db"
 EXCEL_FILE = "Basededatos_Actualizada.xlsx"
+
+
+def get_data_dir():
+    """Returns the writable directory next to the exe (or cwd in development)."""
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.getcwd()
+
+
+def get_catalog_path():
+    return os.path.join(get_data_dir(), 'catalog.xlsx')
 
 try: 
     from config import STORE_ID, STORE_NAME, CENTRAL_SERVER_URL
@@ -201,9 +213,79 @@ def import_excel_data(force=False):
             print(f"Error importing excel: {e}")
     conn.close()
 
+
+def import_from_fileobj(fileobj, force=False):
+    """
+    Import/update products from an in-memory file-like object (BytesIO or werkzeug FileStorage).
+    Returns (imported_count, error_message_or_None).
+    """
+    try:
+        df = pd.read_excel(fileobj)
+        df.columns = df.columns.str.strip()
+
+        price_column = None
+        for candidate in ['PM', 'Precio venta', 'Precio', 'precio', 'precio venta', 'price']:
+            if candidate in df.columns:
+                price_column = candidate
+                break
+
+        if price_column is None:
+            return 0, 'No se encontro columna de precio valida. Columnas esperadas: Precio venta, PM, Precio.'
+
+        if 'Codigo' not in df.columns:
+            return 0, 'No se encontro la columna "Codigo" en el archivo.'
+
+        if 'Descripcion' not in df.columns:
+            return 0, 'No se encontro la columna "Descripcion" en el archivo.'
+
+        df[price_column] = pd.to_numeric(df[price_column], errors='coerce').fillna(0)
+
+        conn = get_db()
+        c = conn.cursor()
+        imported = 0
+        excel_codes = []
+
+        for _, row in df.iterrows():
+            codigo = str(row.get('Codigo', '')).strip()
+            desc = str(row.get('Descripcion', '')).strip()
+            precio = float(row.get(price_column, 0))
+
+            if codigo and codigo != 'nan' and desc and desc != 'nan':
+                excel_codes.append(codigo)
+                existing = c.execute("SELECT stock FROM products WHERE codigo = ?", (codigo,)).fetchone()
+                if existing:
+                    c.execute("UPDATE products SET descripcion = ?, precio = ? WHERE codigo = ?",
+                              (desc, precio, codigo))
+                else:
+                    c.execute("INSERT INTO products (codigo, descripcion, precio, stock) VALUES (?, ?, ?, ?)",
+                              (codigo, desc, precio, 0))
+                imported += 1
+
+        if force and excel_codes:
+            placeholders = ",".join("?" for _ in excel_codes)
+            c.execute(f"DELETE FROM products WHERE codigo NOT IN ({placeholders})", tuple(excel_codes))
+
+        conn.commit()
+        conn.close()
+        return imported, None
+
+    except Exception as e:
+        return 0, str(e)
+
+
 @app.route('/')
 def index():
     return render_template('index.html')
+
+
+# Setup status — called on page load to decide whether to show setup screen
+@app.route('/api/setup/status', methods=['GET'])
+def setup_status():
+    conn = get_db()
+    count = conn.execute("SELECT COUNT(*) as c FROM products").fetchone()['c']
+    conn.close()
+    return jsonify({"needs_setup": count == 0})
+
 
 # Authentication
 @app.route('/api/login', methods=['POST'])
@@ -687,13 +769,64 @@ def remote_sync():
     conn.close()
     return jsonify({"success": True})
 
-# Reload Excel products into inventory
-@app.route('/api/admin/reload_products', methods=['POST'])
-def reload_products():
-    if not os.path.exists(EXCEL_FILE):
-        return jsonify({"success": False, "message": f"Archivo de Excel no encontrado: {EXCEL_FILE}"}), 404
-    import_excel_data(force=True)
-    return jsonify({"success": True, "message": "Inventario recargado desde el archivo Excel."})
+# First-launch catalog upload
+@app.route('/api/setup/upload_products', methods=['POST'])
+def setup_upload_products():
+    if 'file' not in request.files:
+        return jsonify({"success": False, "message": "No se recibió ningún archivo."}), 400
+
+    f = request.files['file']
+    if not f.filename.lower().endswith('.xlsx'):
+        return jsonify({"success": False, "message": "Solo se aceptan archivos .xlsx"}), 400
+
+    file_bytes = io.BytesIO(f.read())
+
+    # Save to disk as catalog.xlsx for future use
+    catalog_path = get_catalog_path()
+    try:
+        file_bytes.seek(0)
+        with open(catalog_path, 'wb') as out:
+            out.write(file_bytes.read())
+    except Exception as e:
+        return jsonify({"success": False, "message": f"No se pudo guardar el archivo: {e}"}), 500
+
+    file_bytes.seek(0)
+    imported, error = import_from_fileobj(file_bytes, force=False)
+    if error:
+        return jsonify({"success": False, "message": error}), 400
+
+    return jsonify({"success": True, "imported": imported,
+                    "message": f"{imported} productos importados correctamente."})
+
+
+# Admin catalog re-upload (replaces old reload_products)
+@app.route('/api/admin/upload_catalog', methods=['POST'])
+def admin_upload_catalog():
+    if 'file' not in request.files:
+        return jsonify({"success": False, "message": "No se recibió ningún archivo."}), 400
+
+    f = request.files['file']
+    if not f.filename.lower().endswith('.xlsx'):
+        return jsonify({"success": False, "message": "Solo se aceptan archivos .xlsx"}), 400
+
+    file_bytes = io.BytesIO(f.read())
+
+    # Overwrite catalog.xlsx on disk
+    catalog_path = get_catalog_path()
+    try:
+        file_bytes.seek(0)
+        with open(catalog_path, 'wb') as out:
+            out.write(file_bytes.read())
+    except Exception as e:
+        return jsonify({"success": False, "message": f"No se pudo guardar el archivo: {e}"}), 500
+
+    file_bytes.seek(0)
+    imported, error = import_from_fileobj(file_bytes, force=True)
+    if error:
+        return jsonify({"success": False, "message": error}), 400
+
+    return jsonify({"success": True, "imported": imported,
+                    "message": f"Catalogo actualizado: {imported} productos importados."})
 
 # Export sales to Excel
 @app.route('/api/admin/export', methods=['GET'])

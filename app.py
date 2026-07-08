@@ -4,16 +4,15 @@ import time
 import webview
 import sys
 import os
-from pos_backend import app, init_db, import_excel_data
+from pos_backend import app, init_db
 
 def start_server():
     # Use a specific port to avoid conflicts, disable reloader since we are running in a thread
     app.run(host='127.0.0.1', port=5000, use_reloader=False)
 
 if __name__ == '__main__':
-    # Initialize Database and Import Excel Data if needed
+    # Initialize Database (products are imported via web upload on first launch)
     init_db()
-    import_excel_data()
     
     # Start Flask Server in a daemon thread
     t = threading.Thread(target=start_server)

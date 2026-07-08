@@ -24,8 +24,40 @@
     </div>
 
     <div id="app">
+        <!-- 0. SETUP VIEW (first launch only) -->
+        <div id="view-setup" class="view">
+            <div class="login-wrapper">
+                <div class="glass-card login-card">
+                    <div class="login-logo">
+                        <div class="logo-icon-wrapper">
+                            <i class="fa-solid fa-file-excel"></i>
+                        </div>
+                        <h1>NXT <span>POS</span></h1>
+                        <p class="login-subtitle">Configuración Inicial</p>
+                    </div>
+                    <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1.5rem; line-height: 1.6;">
+                        Para comenzar, sube el archivo Excel con el catálogo de productos.<br>
+                        Columnas requeridas: <strong>Codigo</strong>, <strong>Descripcion</strong>, <strong>Precio venta</strong>.
+                    </p>
+                    <div class="input-group" style="margin-bottom: 1.2rem;">
+                        <i class="fa-solid fa-file-arrow-up"></i>
+                        <input type="file" id="setup-file" accept=".xlsx"
+                            style="padding-left: 2.7rem; cursor: pointer;">
+                    </div>
+                    <button type="button" id="setup-upload-btn" class="btn btn-primary btn-glow"
+                        onclick="uploadCatalog()">
+                        <i class="fa-solid fa-cloud-arrow-up"></i> Importar catálogo
+                    </button>
+                    <p id="setup-status" class="error-msg" style="min-height: 20px; margin-top: 1rem;"></p>
+                    <div class="login-footer">
+                        <p>NXT Solutions &copy; 2026</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- 1. LOGIN VIEW -->
-        <div id="view-login" class="view active">
+        <div id="view-login" class="view">
             <div class="login-wrapper">
                 <div class="glass-card login-card">
                     <div class="login-logo">
@@ -414,6 +446,13 @@
                         <button class="btn btn-ghost" id="sort-order-btn" onclick="toggleSortOrder()">
                             <i class="fa-solid fa-arrow-down-a-z" id="sort-order-icon"></i>
                         </button>
+                    </div>
+                    <div style="display:flex; align-items:center; gap:0.5rem;">
+                        <label for="admin-catalog-file" class="btn btn-accent" style="cursor:pointer; margin:0;">
+                            <i class="fa-solid fa-file-arrow-up"></i> Subir catálogo
+                        </label>
+                        <input type="file" id="admin-catalog-file" accept=".xlsx"
+                            style="display:none;" onchange="uploadAdminCatalog(this)">
                     </div>
                 </div>
                 <div class="admin-tables glass-panel">

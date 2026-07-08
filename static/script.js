@@ -32,7 +32,8 @@ function showView(viewId) {
         v.style.display = 'none';
     });
     const target = document.getElementById(viewId);
-    target.style.display = viewId === 'view-login' ? 'flex' : 'block';
+    // Both login and setup use flex for vertical centering
+    target.style.display = (viewId === 'view-login' || viewId === 'view-setup') ? 'flex' : 'block';
     // Small delay for CSS transition
     requestAnimationFrame(() => {
         target.classList.add('active');
@@ -1403,4 +1404,95 @@ function roundMoney(value) {
 // ============================================
 // Initialize
 // ============================================
-showView('view-login');
+
+async function initApp() {
+    try {
+        const res = await fetch('/api/setup/status');
+        const data = await res.json();
+        if (data.needs_setup) {
+            showView('view-setup');
+        } else {
+            showView('view-login');
+        }
+    } catch (err) {
+        // If status check fails, fall back to login
+        showView('view-login');
+    }
+}
+
+// ============================================
+// Setup — first-launch catalog upload
+// ============================================
+async function uploadCatalog() {
+    const fileInput = document.getElementById('setup-file');
+    const statusEl = document.getElementById('setup-status');
+    const btn = document.getElementById('setup-upload-btn');
+
+    statusEl.textContent = '';
+    statusEl.style.color = '';
+
+    if (!fileInput.files || fileInput.files.length === 0) {
+        statusEl.textContent = 'Selecciona un archivo .xlsx primero.';
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Importando...';
+
+    try {
+        const res = await fetch('/api/setup/upload_products', {
+            method: 'POST',
+            body: formData
+        });
+        const data = await res.json();
+
+        if (data.success) {
+            showToast(`${data.imported} productos importados ✓`, 'success');
+            showView('view-login');
+        } else {
+            statusEl.textContent = data.message;
+        }
+    } catch (err) {
+        statusEl.textContent = 'Error de conexión. Intenta de nuevo.';
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-up"></i> Importar catálogo';
+    }
+}
+
+// ============================================
+// Admin — catalog re-upload from inventory tab
+// ============================================
+async function uploadAdminCatalog(input) {
+    if (!input.files || input.files.length === 0) return;
+
+    const formData = new FormData();
+    formData.append('file', input.files[0]);
+
+    // Reset input so the same file can be re-selected if needed
+    input.value = '';
+
+    showToast('Subiendo catálogo...', 'info');
+
+    try {
+        const res = await fetch('/api/admin/upload_catalog', {
+            method: 'POST',
+            body: formData
+        });
+        const data = await res.json();
+
+        if (data.success) {
+            showToast(`${data.message}`, 'success');
+            loadInventory(document.getElementById('inventory-search')?.value || '');
+        } else {
+            showToast(data.message, 'error');
+        }
+    } catch (err) {
+        showToast('Error al subir el catálogo', 'error');
+    }
+}
+
+initApp();
