@@ -5,13 +5,17 @@ import pandas as pd
 import io
 import time
 import threading
+import subprocess
+import hmac
+import hashlib
+import secrets
+from functools import wraps
 import requests
 from flask import Flask, request, jsonify, render_template, send_from_directory, send_file
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
 
 app = Flask(__name__)
-DB_FILE = "pos_database.db"
 EXCEL_FILE = "Basededatos_Actualizada.xlsx"
 
 
@@ -22,15 +26,85 @@ def get_data_dir():
     return os.getcwd()
 
 
+# DB and catalog live next to the exe (or cwd in dev), never relative to cwd at runtime
+DB_FILE = os.path.join(get_data_dir(), "pos_database.db")
+
+
 def get_catalog_path():
     return os.path.join(get_data_dir(), 'catalog.xlsx')
 
-try: 
-    from config import STORE_ID, STORE_NAME, CENTRAL_SERVER_URL
+try:
+    from config import STORE_ID, STORE_NAME, CENTRAL_SERVER_URL, SYNC_SECRET
 except ImportError:
     STORE_ID = "1"
     STORE_NAME = "Aeropuerto"
     CENTRAL_SERVER_URL = "http://localhost:5000"
+    SYNC_SECRET = "change-me-in-config"
+
+# ── Auth helpers ──────────────────────────────────────────────────────────────
+# A lightweight token: HMAC-SHA256(username:role, SECRET_KEY).
+# Generated once at startup and stored in the DB so it survives restarts.
+# Not a full JWT — sufficient for a single-server LAN/cloud deployment.
+
+def _get_or_create_secret(conn):
+    secret = get_config_value(conn, 'secret_key')
+    if not secret:
+        secret = secrets.token_hex(32)
+        set_config_value(conn, 'secret_key', secret)
+    return secret
+
+
+def _make_token(username: str, role: str, secret: str) -> str:
+    payload = f"{username}:{role}"
+    sig = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return f"{payload}:{sig}"
+
+
+def _verify_token(token: str, secret: str):
+    """Return (username, role) if valid, else None."""
+    try:
+        parts = token.rsplit(':', 1)
+        if len(parts) != 2:
+            return None
+        payload, sig = parts
+        expected = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected):
+            return None
+        username, role = payload.split(':', 1)
+        return username, role
+    except Exception:
+        return None
+
+
+def require_auth(*allowed_roles):
+    """Decorator that enforces X-Auth-Token header with one of the allowed roles."""
+    def decorator(f):
+        @wraps(f)
+        def wrapped(*args, **kwargs):
+            token = request.headers.get('X-Auth-Token', '')
+            conn = get_db()
+            secret = get_config_value(conn, 'secret_key', '')
+            conn.close()
+            result = _verify_token(token, secret) if secret else None
+            if not result:
+                return jsonify({"success": False, "message": "No autenticado"}), 401
+            _, role = result
+            if allowed_roles and role not in allowed_roles:
+                return jsonify({"success": False, "message": "Sin permisos"}), 403
+            return f(*args, **kwargs)
+        return wrapped
+    return decorator
+
+
+def require_sync_secret(f):
+    """Decorator for machine-to-machine endpoints: validates X-Sync-Secret header."""
+    @wraps(f)
+    def wrapped(*args, **kwargs):
+        provided = request.headers.get('X-Sync-Secret', '')
+        if not provided or not hmac.compare_digest(provided, SYNC_SECRET):
+            return jsonify({"success": False, "message": "Sync secret inválido"}), 401
+        return f(*args, **kwargs)
+    return wrapped
 
 def get_db():
     conn = sqlite3.connect(DB_FILE)
@@ -118,6 +192,7 @@ def init_db():
                     product_codigo TEXT,
                     quantity INTEGER,
                     subtotal REAL,
+                    descripcion TEXT DEFAULT '',
                     FOREIGN KEY(sale_id) REFERENCES sales(id),
                     FOREIGN KEY(product_codigo) REFERENCES products(codigo)
                 )''')
@@ -126,6 +201,20 @@ def init_db():
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 )''')
+
+    # Central-server stores registry
+    c.execute('''CREATE TABLE IF NOT EXISTS stores (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    store_key TEXT UNIQUE NOT NULL,
+                    name TEXT,
+                    address TEXT DEFAULT '',
+                    active INTEGER DEFAULT 1,
+                    last_sync TEXT
+                )''')
+
+    # Add origin-tracing columns to sales (only created if missing on older DBs)
+    add_column_if_not_exists(conn, 'sales', 'source_store', "TEXT DEFAULT NULL")
+    add_column_if_not_exists(conn, 'sales', 'source_sale_id', "INTEGER DEFAULT NULL")
 
     # Add missing columns for older databases
     add_column_if_not_exists(conn, 'users', 'store', "TEXT DEFAULT 'Tienda Principal'")
@@ -138,7 +227,13 @@ def init_db():
     add_column_if_not_exists(conn, 'sales', 'discount_currency', "TEXT DEFAULT 'mxn'")
     add_column_if_not_exists(conn, 'sales', 'cash_currency', "TEXT DEFAULT 'mxn'")
     add_column_if_not_exists(conn, 'sales', 'vendor', "TEXT")
-    
+    # Central-server columns added via migration so existing DBs get them too
+    add_column_if_not_exists(conn, 'sales', 'store_key', "TEXT DEFAULT NULL")
+    add_column_if_not_exists(conn, 'sales', 'local_sale_id', "INTEGER DEFAULT NULL")
+    add_column_if_not_exists(conn, 'sales', 'cashier', "TEXT DEFAULT ''")
+    add_column_if_not_exists(conn, 'sales', 'sale_type', "TEXT DEFAULT 'normal'")
+    add_column_if_not_exists(conn, 'sale_items', 'descripcion', "TEXT DEFAULT ''")
+
     create_config_entry_if_missing(conn, 'exchange_rate', 17.5)
     
     create_user_if_missing(c, 'admin', 'admin123', 'admin', 'Central')
@@ -275,6 +370,26 @@ def import_from_fileobj(fileobj, force=False):
 
 @app.route('/')
 def index():
+    # Central-server health check: return JSON when called without an HTML browser
+    # (e.g. Railway health probe, curl). Store browser always sends Accept: text/html.
+    accept = request.headers.get('Accept', '')
+    if 'text/html' not in accept:
+        conn = get_db()
+        try:
+            conn.execute("SELECT 1")
+            db_status = "connected"
+        except Exception:
+            db_status = "error"
+        finally:
+            conn.close()
+        return jsonify({
+            "status": "ok",
+            "service": "NXT POS Central Server",
+            "version": "2.2",
+            "database_url_set": bool(DB_FILE),
+            "sync_secret_set": bool(SYNC_SECRET and SYNC_SECRET != "change-me-to-a-strong-random-string"),
+            "database_status": db_status
+        })
     return render_template('index.html')
 
 
@@ -293,14 +408,16 @@ def login():
     data = request.json
     username = data.get('username')
     password = data.get('password')
-    
+
     conn = get_db()
     user = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
-    conn.close()
-    
     if user and check_password_hash(user['password_hash'], password):
+        secret = _get_or_create_secret(conn)
+        token = _make_token(user['username'], user['role'], secret)
+        conn.close()
         return jsonify({
             "success": True,
+            "token": token,
             "user": {
                 "id": user['id'],
                 "username": user['username'],
@@ -308,6 +425,7 @@ def login():
                 "store": user['store'] or 'Sin tienda'
             }
         })
+    conn.close()
     return jsonify({"success": False, "message": "Credenciales inválidas"}), 401
 
 # Products
@@ -324,6 +442,7 @@ def get_products():
 
 # Update product stock (Admin)
 @app.route('/api/products/<codigo>/stock', methods=['PUT'])
+@require_auth('admin', 'almacen')
 def update_stock(codigo):
     data = request.json
     new_stock = data.get('stock', 0)
@@ -335,6 +454,7 @@ def update_stock(codigo):
 
 # Update product price (Admin)
 @app.route('/api/products/<codigo>', methods=['PUT'])
+@require_auth('admin', 'almacen')
 def update_product(codigo):
     data = request.json
     conn = get_db()
@@ -571,6 +691,7 @@ def get_receipt(sale_id):
 
 # Admin endpoints
 @app.route('/api/admin/income', methods=['GET'])
+@require_auth('admin')
 def get_income():
     conn = get_db()
     # Today's income
@@ -640,6 +761,7 @@ def get_exchange_rate():
     return jsonify({"exchange_rate": rate})
 
 @app.route('/api/admin/exchange-rate', methods=['POST'])
+@require_auth('admin')
 def update_exchange_rate():
     data = request.json
     rate = data.get('exchange_rate')
@@ -658,6 +780,7 @@ def update_exchange_rate():
 
 # Admin: inventory with low stock alert
 @app.route('/api/admin/inventory', methods=['GET'])
+@require_auth('admin', 'almacen')
 def get_inventory():
     query = request.args.get('q', '').lower()
     sort = request.args.get('sort', 'descripcion')
@@ -694,19 +817,47 @@ def do_sync_to_central():
     payload = []
     for sale in unsynced_sales:
         sale_dict = dict(sale)
+
+        # §7.2 — resolve cashier username from users table
+        user = conn.execute(
+            "SELECT username FROM users WHERE id = ?", (sale['user_id'],)
+        ).fetchone()
+        sale_dict['cashier'] = user['username'] if user else ''
+
         items = conn.execute("SELECT * FROM sale_items WHERE sale_id = ?", (sale['id'],)).fetchall()
-        sale_dict['items'] = [dict(i) for i in items]
-        
+        item_list = []
+        for item in items:
+            item_dict = dict(item)
+            # §7.3 — resolve product description from products table
+            prod = conn.execute(
+                "SELECT descripcion FROM products WHERE codigo = ?", (item['product_codigo'],)
+            ).fetchone()
+            item_dict['descripcion'] = prod['descripcion'] if prod else ''
+            item_list.append(item_dict)
+        sale_dict['items'] = item_list
+
         if sale_dict.get('store') == 'Sin tienda' or not sale_dict.get('store'):
             sale_dict['store'] = STORE_NAME
-            
+
+        # §7.1 — stable store key so renaming STORE_NAME doesn't create duplicate store rows
+        sale_dict['store_id'] = STORE_ID
+
+        # Carry origin info so the central server can trace each sale back
+        sale_dict['source_store'] = STORE_NAME
+        sale_dict['source_sale_id'] = sale_dict['id']
+
         payload.append(sale_dict)
         
     conn.close()
     
     try:
         url = f"{CENTRAL_SERVER_URL.rstrip('/')}/api/remote_sync"
-        response = requests.post(url, json={"sales": payload}, timeout=10)
+        response = requests.post(
+            url,
+            json={"sales": payload},
+            headers={"X-Sync-Secret": SYNC_SECRET},
+            timeout=10,
+        )
         
         if response.status_code == 200 and response.json().get('success'):
             conn = get_db()
@@ -723,51 +874,256 @@ def do_sync_to_central():
 
 # Real Sync
 @app.route('/api/sync', methods=['POST'])
+@require_auth('admin')
 def sync_data():
     count, msg = do_sync_to_central()
     success = count > 0 or "Nada que sincronizar" in msg
     return jsonify({"success": success, "message": msg})
 
-@app.route('/api/remote_sync', methods=['POST'])
-def remote_sync():
-    data = request.json
+def _process_remote_sync(data):
+    """
+    Shared logic for /api/remote_sync and /api/receive_sync (§10 compatibility alias).
+    Handles both the modern embedded-items format and the legacy top-level items dict.
+    Returns a Flask response.
+    """
     sales = data.get('sales', [])
     if not sales:
-        return jsonify({"success": True})
-        
+        return jsonify({"success": True, "received": 0, "inserted": 0, "errors": []})
+
+    # §10 — normalise legacy format: top-level "items" dict keyed by sale id
+    legacy_items = data.get('items')
+    if legacy_items and isinstance(legacy_items, dict):
+        for sale in sales:
+            sid = str(sale.get('id', ''))
+            if sid in legacy_items:
+                sale['items'] = legacy_items[sid]
+
     conn = get_db()
     c = conn.cursor()
-    
+    inserted = 0
+    errors = []
+
     for sale in sales:
-        user_id = sale.get('user_id')
-        
-        c.execute("""
-            INSERT INTO sales (
-                user_id, subtotal, discount, total, payment_method, 
-                cash_amount, card_amount, timestamp, is_synced, store
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
-        """, (
-            user_id, sale.get('subtotal', 0), sale.get('discount', 0), sale.get('total', 0),
-            sale.get('payment_method', 'efectivo'), sale.get('cash_amount', 0), sale.get('card_amount', 0),
-            sale.get('timestamp'), sale.get('store', 'Desconocido')
-        ))
-        
-        new_sale_id = c.lastrowid
-        
-        items = sale.get('items', [])
-        for item in items:
-            c.execute(
-                "INSERT INTO sale_items (sale_id, product_codigo, quantity, subtotal) VALUES (?, ?, ?, ?)",
-                (new_sale_id, item.get('product_codigo'), item.get('quantity'), item.get('subtotal'))
-            )
-            c.execute(
-                "UPDATE products SET stock = stock - ? WHERE codigo = ?",
-                (item.get('quantity'), item.get('product_codigo'))
-            )
-            
+        try:
+            store_name = sale.get('store') or 'Desconocido'
+            store_key  = str(sale.get('store_id') or store_name)
+            local_sale_id = sale.get('id')
+
+            # §6 — auto-register / update store row
+            now_iso = datetime.now().isoformat(timespec='seconds')
+            c.execute("""
+                INSERT INTO stores (store_key, name, last_sync)
+                VALUES (?, ?, ?)
+                ON CONFLICT(store_key) DO UPDATE SET name = excluded.name, last_sync = excluded.last_sync
+            """, (store_key, store_name, now_iso))
+
+            subtotal         = float(sale.get('subtotal') or 0)
+            discount         = float(sale.get('discount') or 0)
+            total            = float(sale.get('total')    or 0)
+            cash_amount      = float(sale.get('cash_amount')  or 0)
+            card_amount      = float(sale.get('card_amount')  or 0)
+            discount_currency = sale.get('discount_currency') or 'mxn'
+            cash_currency    = sale.get('cash_currency')      or 'mxn'
+            payment_method   = sale.get('payment_method')     or 'efectivo'
+            cashier          = sale.get('cashier') or ''
+            vendor           = sale.get('vendor')
+            timestamp        = sale.get('timestamp')
+            source_store     = sale.get('source_store') or store_name
+            source_sale_id   = sale.get('source_sale_id')
+
+            # §6 — degustación detection (server-side, no field required from store)
+            is_degu   = subtotal > 0 and discount >= subtotal
+            sale_type = 'degustacion' if is_degu else 'normal'
+
+            # §6 — deduplication: skip if (store_key, local_sale_id) already exists
+            if local_sale_id is not None:
+                existing = c.execute(
+                    "SELECT id FROM sales WHERE store_key = ? AND local_sale_id = ?",
+                    (store_key, local_sale_id)
+                ).fetchone()
+                if existing:
+                    continue
+
+            c.execute("""
+                INSERT INTO sales (
+                    subtotal, discount, discount_currency, total,
+                    payment_method, cash_amount, cash_currency, card_amount,
+                    cashier, vendor, timestamp, is_synced, store,
+                    store_key, local_sale_id, sale_type,
+                    source_store, source_sale_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+            """, (
+                subtotal, discount, discount_currency, total,
+                payment_method, cash_amount, cash_currency, card_amount,
+                cashier, vendor, timestamp, store_name,
+                store_key, local_sale_id, sale_type,
+                source_store, source_sale_id
+            ))
+
+            new_sale_id = c.lastrowid
+            inserted += 1
+
+            items = sale.get('items', [])
+            for item in items:
+                c.execute(
+                    "INSERT INTO sale_items (sale_id, product_codigo, quantity, subtotal, descripcion) VALUES (?, ?, ?, ?, ?)",
+                    (
+                        new_sale_id,
+                        item.get('product_codigo'),
+                        int(item.get('quantity') or 1),
+                        float(item.get('subtotal') or 0),
+                        item.get('descripcion') or '',
+                    )
+                )
+                # Do NOT update stock here — central DB is reporting-only.
+
+        except Exception as exc:
+            errors.append(f"sale id={sale.get('id')}: {exc}")
+
     conn.commit()
     conn.close()
-    return jsonify({"success": True})
+    return jsonify({
+        "success": True,
+        "received": len(sales),
+        "inserted": inserted,
+        "errors": errors
+    })
+
+
+@app.route('/api/remote_sync', methods=['POST'])
+@require_sync_secret
+def remote_sync():
+    return _process_remote_sync(request.json or {})
+
+
+# §10 — backwards-compatibility alias
+@app.route('/api/receive_sync', methods=['POST'])
+@require_sync_secret
+def receive_sync():
+    return _process_remote_sync(request.json or {})
+
+# ── §8 Central Admin API ──────────────────────────────────────────────────────
+
+@app.route('/api/admin/dashboard', methods=['GET'])
+@require_auth('admin')
+def admin_dashboard():
+    """Aggregated stats across all stores (§8)."""
+    conn = get_db()
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    row = conn.execute("""
+        SELECT COALESCE(SUM(total), 0) as today_total, COUNT(*) as today_count
+        FROM sales
+        WHERE sale_type != 'degustacion' AND timestamp LIKE ?
+    """, (f"{today}%",)).fetchone()
+
+    grand = conn.execute("""
+        SELECT COALESCE(SUM(total), 0) as grand_total
+        FROM sales WHERE sale_type != 'degustacion'
+    """).fetchone()
+
+    stores_rows = conn.execute("""
+        SELECT s.store_key, s.name, s.last_sync,
+               COUNT(sa.id) as total_sales,
+               COALESCE(SUM(CASE WHEN sa.sale_type != 'degustacion' THEN sa.total ELSE 0 END), 0) as total_revenue,
+               COUNT(CASE WHEN sa.sale_type = 'degustacion' THEN 1 END) as degustaciones
+        FROM stores s
+        LEFT JOIN sales sa ON sa.store_key = s.store_key
+        GROUP BY s.store_key, s.name, s.last_sync
+        ORDER BY s.name
+    """).fetchall()
+
+    cashiers_rows = conn.execute("""
+        SELECT cashier, COUNT(*) as total_sales,
+               COALESCE(SUM(total), 0) as total_revenue
+        FROM sales
+        WHERE sale_type != 'degustacion' AND cashier != ''
+        GROUP BY cashier
+        ORDER BY total_revenue DESC
+        LIMIT 20
+    """).fetchall()
+
+    conn.close()
+    return jsonify({
+        "today_total":  row['today_total'],
+        "today_count":  row['today_count'],
+        "grand_total":  grand['grand_total'],
+        "stores":   [dict(r) for r in stores_rows],
+        "cashiers": [dict(r) for r in cashiers_rows],
+    })
+
+
+@app.route('/api/admin/sales', methods=['GET'])
+@require_auth('admin')
+def admin_sales():
+    """Raw sales rows with optional filters (§8)."""
+    store  = request.args.get('store')
+    month  = request.args.get('month')
+    limit  = min(int(request.args.get('limit', 200)), 1000)
+
+    where_clauses = []
+    params = []
+
+    if store:
+        where_clauses.append("store_key = ?")
+        params.append(store)
+    if month:
+        where_clauses.append("timestamp LIKE ?")
+        params.append(f"{month}%")
+
+    where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+    params.append(limit)
+
+    conn = get_db()
+    rows = conn.execute(
+        f"SELECT * FROM sales {where_sql} ORDER BY timestamp DESC LIMIT ?",
+        params
+    ).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route('/api/admin/reports/cashier', methods=['GET'])
+@require_auth('admin')
+def admin_cashier_report():
+    """Per-cashier aggregation for a given month (§8)."""
+    month = request.args.get('month', datetime.now().strftime("%Y-%m"))
+    store = request.args.get('store')
+
+    where_clauses = ["timestamp LIKE ?", "sale_type != 'degustacion'", "cashier != ''"]
+    params = [f"{month}%"]
+
+    if store:
+        where_clauses.append("store_key = ?")
+        params.append(store)
+
+    where_sql = "WHERE " + " AND ".join(where_clauses)
+
+    conn = get_db()
+    rows = conn.execute(f"""
+        SELECT cashier, store_key,
+               COUNT(*) as total_sales,
+               COALESCE(SUM(total), 0) as total_revenue,
+               COUNT(CASE WHEN sale_type = 'degustacion' THEN 1 END) as degustaciones
+        FROM sales
+        {where_sql}
+        GROUP BY cashier, store_key
+        ORDER BY total_revenue DESC
+    """, params).fetchall()
+    conn.close()
+    return jsonify({"month": month, "cashiers": [dict(r) for r in rows]})
+
+
+@app.route('/api/admin/stores', methods=['GET'])
+@require_auth('admin')
+def admin_stores():
+    """All rows from the stores table (§8)."""
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM stores ORDER BY name").fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+# ── End §8 Central Admin API ──────────────────────────────────────────────────
 
 # First-launch catalog upload
 @app.route('/api/setup/upload_products', methods=['POST'])
@@ -801,6 +1157,7 @@ def setup_upload_products():
 
 # Admin catalog re-upload (replaces old reload_products)
 @app.route('/api/admin/upload_catalog', methods=['POST'])
+@require_auth('admin')
 def admin_upload_catalog():
     if 'file' not in request.files:
         return jsonify({"success": False, "message": "No se recibió ningún archivo."}), 400
@@ -830,97 +1187,112 @@ def admin_upload_catalog():
 
 # Export sales to Excel
 @app.route('/api/admin/export', methods=['GET'])
+@require_auth('admin')
 def export_excel():
     try:
         conn = get_db()
-        
+
         # Query sales
         sales_df = pd.read_sql_query("""
-            SELECT s.id as ID, u.username as Cajero, s.vendor as Vendedor, s.store as Tienda, s.timestamp as Fecha, 
-                   s.subtotal as Subtotal, s.discount as Descuento, s.total as Total, 
+            SELECT s.id as ID, u.username as Cajero, s.vendor as Vendedor, s.store as Tienda, s.timestamp as Fecha,
+                   s.subtotal as Subtotal, s.discount as Descuento, s.total as Total,
                    s.payment_method as Metodo_Pago, s.cash_amount as Efectivo, s.card_amount as Tarjeta
             FROM sales s
             LEFT JOIN users u ON s.user_id = u.id
             ORDER BY s.timestamp DESC
         """, conn)
-        
-        # Query items - safe division handling
+
+        # Query items
         items_df = pd.read_sql_query("""
-            SELECT si.sale_id as Venta_ID, p.codigo as Codigo, p.descripcion as Descripcion, 
+            SELECT si.sale_id as Venta_ID, p.codigo as Codigo, p.descripcion as Descripcion,
                    si.quantity as Cantidad, si.subtotal as Subtotal_Item
             FROM sale_items si
             LEFT JOIN products p ON si.product_codigo = p.codigo
         """, conn)
-        
+
         # Calculate unit price safely
         if not items_df.empty:
             items_df['Precio_Unitario'] = items_df.apply(
                 lambda row: row['Subtotal_Item'] / row['Cantidad'] if row['Cantidad'] > 0 else 0,
                 axis=1
             )
-            # Reorder columns to include Precio_Unitario
             items_df = items_df[['Venta_ID', 'Codigo', 'Descripcion', 'Cantidad', 'Precio_Unitario', 'Subtotal_Item']]
-        
+
         conn.close()
-        
+
         # Write to Excel in memory
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             sales_df.to_excel(writer, sheet_name='Ventas', index=False)
             items_df.to_excel(writer, sheet_name='Articulos Vendidos', index=False)
-            
-            # Auto-adjust columns widths for 'Ventas'
+
+            # Auto-adjust column widths for 'Ventas'
             worksheet = writer.sheets['Ventas']
             for i, col in enumerate(sales_df.columns):
-                if len(sales_df) > 0:
-                    max_len = max([len(str(x)) for x in sales_df[col].values] + [len(col)]) + 2
-                else:
-                    max_len = len(col) + 2
-                # openpyxl uses 1-based indexing for columns (A=1)
-                column_letter = worksheet.cell(row=1, column=i+1).column_letter
-                worksheet.column_dimensions[column_letter].width = min(max_len, 50)
-                
-        # Auto-adjust columns widths for 'Articulos Vendidos'
+                max_len = (max([len(str(x)) for x in sales_df[col].values] + [len(col)]) + 2
+                           if len(sales_df) > 0 else len(col) + 2)
+                worksheet.column_dimensions[
+                    worksheet.cell(row=1, column=i + 1).column_letter
+                ].width = min(max_len, 50)
+
+            # Auto-adjust column widths for 'Articulos Vendidos'
             worksheet_items = writer.sheets['Articulos Vendidos']
             for i, col in enumerate(items_df.columns):
-                if len(items_df) > 0:
-                    max_len = max([len(str(x)) for x in items_df[col].values] + [len(col)]) + 2
-                else:
-                    max_len = len(col) + 2
-                column_letter = worksheet_items.cell(row=1, column=i+1).column_letter
-                worksheet_items.column_dimensions[column_letter].width = min(max_len, 50)
-                
+                max_len = (max([len(str(x)) for x in items_df[col].values] + [len(col)]) + 2
+                           if len(items_df) > 0 else len(col) + 2)
+                worksheet_items.column_dimensions[
+                    worksheet_items.cell(row=1, column=i + 1).column_letter
+                ].width = min(max_len, 50)
+
         output.seek(0)
-        
-        import os
-        import subprocess
-        
+
         filename = f"Ventas_NXT_POS_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-        export_dir = os.path.join(os.getcwd(), 'Exportaciones')
+        # Use get_data_dir() so the path is always correct whether running as exe or in dev
+        export_dir = os.path.join(get_data_dir(), 'Exportaciones')
         os.makedirs(export_dir, exist_ok=True)
         export_path = os.path.join(export_dir, filename)
-        
-        # Save to disk
+
         with open(export_path, 'wb') as f:
             f.write(output.read())
-            
-        # Try to open the folder and select the file
-        try:
-            if os.name == 'nt':
+
+        # Open Explorer to the file — Windows only, silently skipped on Linux/Mac
+        if os.name == 'nt':
+            try:
                 subprocess.run(['explorer', '/select,', os.path.normpath(export_path)])
-        except Exception as e:
-            print(f"Error opening explorer: {e}")
-            
+            except Exception as e:
+                print(f"Error opening explorer: {e}")
+
         return jsonify({"success": True, "message": f"Guardado en Exportaciones: {filename}"})
     except Exception as e:
         print(f"Error exporting Excel: {e}")
         return jsonify({"success": False, "message": f"Error al exportar: {str(e)}"}), 500
+
+def pull_exchange_rate_from_central():
+    """Fetch the exchange rate from the central server and persist it locally."""
+    if not CENTRAL_SERVER_URL:
+        return
+    try:
+        url = f"{CENTRAL_SERVER_URL.rstrip('/')}/api/exchange-rate"
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            rate = response.json().get('exchange_rate')
+            if rate and float(rate) > 0:
+                conn = get_db()
+                set_config_value(conn, 'exchange_rate', float(rate))
+                conn.close()
+    except Exception:
+        pass
+
 
 def background_sync_task():
     while True:
         time.sleep(60)
         try:
             do_sync_to_central()
+        except Exception:
+            pass
+        try:
+            pull_exchange_rate_from_central()
         except Exception:
             pass
 

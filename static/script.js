@@ -3,6 +3,7 @@
    ============================================ */
 
 let currentUser = null;
+let authToken = null; // HMAC token returned by /api/login
 let cart = [];
 let products = [];
 let currentReceiptData = null; // For reprinting
@@ -85,6 +86,7 @@ loginForm.addEventListener('submit', async (e) => {
 
         if (data.success) {
             currentUser = data.user;
+            authToken = data.token || null;
             showToast(`Bienvenido, ${currentUser.username}`, 'success');
 
             if (currentUser.role === 'admin') {
@@ -125,6 +127,7 @@ loginForm.addEventListener('submit', async (e) => {
 
 function logout() {
     currentUser = null;
+    authToken = null;
     cart = [];
     document.getElementById('username').value = '';
     document.getElementById('password').value = '';
@@ -784,7 +787,9 @@ async function viewReceipt(saleId) {
 // ============================================
 async function loadAdminData() {
     try {
-        const res = await fetch('/api/admin/income');
+        const res = await fetch('/api/admin/income', {
+            headers: { 'X-Auth-Token': authToken || '' }
+        });
         const data = await res.json();
 
         exchangeRate = data.exchange_rate || exchangeRate;
@@ -857,7 +862,7 @@ async function saveExchangeRate() {
     try {
         const res = await fetch('/api/admin/exchange-rate', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'X-Auth-Token': authToken || '' },
             body: JSON.stringify({ exchange_rate: value })
         });
         const data = await res.json();
@@ -993,7 +998,7 @@ function exportToExcel() {
     btn.innerHTML = '<span class="spinner"></span> Generando...';
     btn.disabled = true;
 
-    fetch('/api/admin/export')
+    fetch('/api/admin/export', { headers: { 'X-Auth-Token': authToken || '' } })
         .then(response => response.json())
         .then(data => {
             if (data.success) {
@@ -1059,7 +1064,9 @@ async function loadInventory(query = '') {
     const sort = document.getElementById('inventory-sort')?.value || 'descripcion';
 
     try {
-        const res = await fetch(`/api/admin/inventory?q=${encodeURIComponent(query)}&sort=${sort}&order=${inventorySortOrder}`);
+        const res = await fetch(`/api/admin/inventory?q=${encodeURIComponent(query)}&sort=${sort}&order=${inventorySortOrder}`, {
+            headers: { 'X-Auth-Token': authToken || '' }
+        });
         const data = await res.json();
         renderInventory(data);
     } catch (err) {
@@ -1178,7 +1185,7 @@ document.getElementById('edit-product-form').addEventListener('submit', async (e
     try {
         const res = await fetch(`/api/products/${encodeURIComponent(codigo)}`, {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'X-Auth-Token': authToken || '' },
             body: JSON.stringify({ descripcion, precio, stock })
         });
         const data = await res.json();
@@ -1202,7 +1209,10 @@ async function syncData() {
     btn.innerHTML = '<span class="spinner"></span> Sincronizando...';
 
     try {
-        const res = await fetch('/api/sync', { method: 'POST' });
+        const res = await fetch('/api/sync', {
+            method: 'POST',
+            headers: { 'X-Auth-Token': authToken || '' }
+        });
         const data = await res.json();
         showToast(data.message, 'success');
         loadAdminData(); // refresh
@@ -1480,6 +1490,7 @@ async function uploadAdminCatalog(input) {
     try {
         const res = await fetch('/api/admin/upload_catalog', {
             method: 'POST',
+            headers: { 'X-Auth-Token': authToken || '' },
             body: formData
         });
         const data = await res.json();
